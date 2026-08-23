@@ -992,6 +992,30 @@ void setLightningBrightness(
   );
 }
 
+void setLightningBrightness2(
+  uint8_t brightness
+) {
+  lightningState.brightness2 =
+    brightness;
+
+  if (!ENABLE_LIGHTNING_LED_2) {
+    return;
+  }
+
+  ledcWrite(
+    LIGHTNING_LED_2_PIN,
+    brightness
+  );
+}
+
+void stopLightningOutputs() {
+  setLightningBrightness(0);
+  setLightningBrightness2(0);
+
+  lightningState.led2Pending = false;
+  lightningState.led2InFlash = false;
+}
+
 void scheduleNextLightningEvent() {
   lightningState.nextEventAt =
     millis() +
@@ -1018,6 +1042,34 @@ void beginLightningEvent() {
     millis();
 }
 
+void updateLightningLed2(
+  unsigned long now
+) {
+  if (!ENABLE_LIGHTNING_LED_2) {
+    return;
+  }
+
+  if (
+    lightningState.led2Pending &&
+    (long)(now - lightningState.led2StartAt) >= 0
+  ) {
+    setLightningBrightness2(
+      lightningState.led2PendingBrightness
+    );
+
+    lightningState.led2Pending = false;
+    lightningState.led2InFlash = true;
+  }
+
+  if (
+    lightningState.led2InFlash &&
+    (long)(now - lightningState.led2EndAt) >= 0
+  ) {
+    setLightningBrightness2(0);
+    lightningState.led2InFlash = false;
+  }
+}
+
 void updateLightning() {
   bool thunderstorm =
     getEffectiveWeather() ==
@@ -1027,16 +1079,15 @@ void updateLightning() {
     !ENABLE_LIGHTNING_LED ||
     !thunderstorm
   ) {
-    lightningState.active =
-      false;
-
-    setLightningBrightness(0);
-
+    lightningState.active = false;
+    stopLightningOutputs();
     return;
   }
 
   unsigned long now =
     millis();
+
+  updateLightningLed2(now);
 
   if (
     lightningState.nextEventAt == 0
@@ -1074,6 +1125,12 @@ void updateLightning() {
         LIGHTNING_MAX_BRIGHTNESS + 1
       );
 
+    unsigned long flashDuration =
+      random(
+        LIGHTNING_FLASH_MIN_MS,
+        LIGHTNING_FLASH_MAX_MS + 1
+      );
+
     setLightningBrightness(
       brightness
     );
@@ -1082,11 +1139,18 @@ void updateLightning() {
       true;
 
     lightningState.stateUntil =
-      now +
-      random(
-        LIGHTNING_FLASH_MIN_MS,
-        LIGHTNING_FLASH_MAX_MS + 1
-      );
+      now + flashDuration;
+
+    if (ENABLE_LIGHTNING_LED_2) {
+      lightningState.led2PendingBrightness =
+        brightness;
+      lightningState.led2StartAt =
+        now + LIGHTNING_LED_2_DELAY_MS;
+      lightningState.led2EndAt =
+        lightningState.led2StartAt + flashDuration;
+      lightningState.led2Pending = true;
+      lightningState.led2InFlash = false;
+    }
 
   } else {
     setLightningBrightness(0);
@@ -1105,8 +1169,16 @@ void updateLightning() {
       scheduleNextLightningEvent();
 
     } else {
+      // Ensure the delayed second flash has time to finish before
+      // starting the next flash in the same lightning event.
+      unsigned long led2Extra =
+        ENABLE_LIGHTNING_LED_2
+          ? LIGHTNING_LED_2_DELAY_MS
+          : 0;
+
       lightningState.stateUntil =
         now +
+        led2Extra +
         random(
           LIGHTNING_GAP_MIN_MS,
           LIGHTNING_GAP_MAX_MS + 1
@@ -1436,6 +1508,12 @@ void handleStatus() {
   lightning["brightness"] =
     lightningState.brightness;
 
+  lightning["led2Enabled"] =
+    ENABLE_LIGHTNING_LED_2;
+
+  lightning["brightness2"] =
+    lightningState.brightness2;
+
   String response;
 
   serializeJsonPretty(
@@ -1495,6 +1573,15 @@ void handleConfig() {
 
   lightning["pin"] =
     LIGHTNING_LED_PIN;
+
+  lightning["led2Enabled"] =
+    ENABLE_LIGHTNING_LED_2;
+
+  lightning["led2Pin"] =
+    LIGHTNING_LED_2_PIN;
+
+  lightning["led2DelayMs"] =
+    LIGHTNING_LED_2_DELAY_MS;
 
   JsonObject pump =
     doc["pump"].to<JsonObject>();
@@ -1665,6 +1752,17 @@ void handleMock() {
   mockState.enabled =
     true;
 
+  // A thunderstorm mock starts a lightning event immediately,
+  // so both configured lightning LEDs can be tested without waiting
+  // for the normal random event interval.
+  if (
+    getEffectiveWeather() == WeatherType::THUNDERSTORM &&
+    ENABLE_LIGHTNING_LED
+  ) {
+    lightningState = LightningState();
+    beginLightningEvent();
+  }
+
   LedState newState =
     calculateLedState();
 
@@ -1696,7 +1794,7 @@ void handleMockOff() {
   lightningState =
     LightningState();
 
-  setLightningBrightness(0);
+  stopLightningOutputs();
 
   Serial.println(
     "Mock disabled. Returning to real weather."
@@ -1787,6 +1885,7 @@ void setupServer() {
     handleRoot
   );
 
+  // Status: accept both forms.
   server.on(
     "/api/status",
     HTTP_GET,
@@ -1794,13 +1893,33 @@ void setupServer() {
   );
 
   server.on(
+    "/api/status/",
+    HTTP_GET,
+    handleStatus
+  );
+
+  // Config: accept both forms.
+  server.on(
     "/api/config",
     HTTP_GET,
     handleConfig
   );
 
   server.on(
+    "/api/config/",
+    HTTP_GET,
+    handleConfig
+  );
+
+  // Mock: accept both forms.
+  server.on(
     "/api/mock",
+    HTTP_GET,
+    handleMock
+  );
+
+  server.on(
+    "/api/mock/",
     HTTP_GET,
     handleMock
   );
@@ -1811,8 +1930,56 @@ void setupServer() {
     handleMockOff
   );
 
+  server.on(
+    "/api/mock/off/",
+    HTTP_GET,
+    handleMockOff
+  );
+
   server.onNotFound(
     []() {
+      String uri = server.uri();
+
+      Serial.print("Request fallback - URI: [");
+      Serial.print(uri);
+      Serial.println("]");
+
+      // Normalize a trailing slash so both /api/status and
+      // /api/status/ are treated identically.
+      while (
+        uri.length() > 1 &&
+        uri.endsWith("/")
+      ) {
+        uri.remove(uri.length() - 1);
+      }
+
+      // Fallback router. This deliberately handles the API
+      // endpoints even if WebServer's registered-route matching
+      // does not match the incoming request on this ESP32 build.
+      if (uri == "/api/status") {
+        handleStatus();
+        return;
+      }
+
+      if (uri == "/api/config") {
+        handleConfig();
+        return;
+      }
+
+      if (uri == "/api/mock") {
+        handleMock();
+        return;
+      }
+
+      if (uri == "/api/mock/off") {
+        handleMockOff();
+        return;
+      }
+
+      Serial.print("404 - normalized URI: [");
+      Serial.print(uri);
+      Serial.println("]");
+
       server.send(
         404,
         "application/json",
@@ -1825,6 +1992,10 @@ void setupServer() {
 
   Serial.println(
     "HTTP server started."
+  );
+
+  Serial.println(
+    "API status: /api/status"
   );
 }
 
@@ -1908,10 +2079,8 @@ void setupTime() {
     millis();
 
   while (
-    time(nullptr) <
-      100000 &&
-    millis() - syncStartedAt <
-      TIME_SYNC_TIMEOUT_MS
+    time(nullptr) < 100000 &&
+    millis() - syncStartedAt < TIME_SYNC_TIMEOUT_MS
   ) {
     delay(250);
     Serial.print(".");
@@ -2010,20 +2179,31 @@ void setupFutureHardware() {
 // ============================================================
 
 void setupLightning() {
-  if (!ENABLE_LIGHTNING_LED) {
-    return;
+  if (ENABLE_LIGHTNING_LED) {
+    ledcAttach(
+      LIGHTNING_LED_PIN,
+      5000,
+      8
+    );
+
+    ledcWrite(
+      LIGHTNING_LED_PIN,
+      0
+    );
   }
 
-  ledcAttach(
-    LIGHTNING_LED_PIN,
-    5000,
-    8
-  );
+  if (ENABLE_LIGHTNING_LED_2) {
+    ledcAttach(
+      LIGHTNING_LED_2_PIN,
+      5000,
+      8
+    );
 
-  ledcWrite(
-    LIGHTNING_LED_PIN,
-    0
-  );
+    ledcWrite(
+      LIGHTNING_LED_2_PIN,
+      0
+    );
+  }
 }
 
 // ============================================================

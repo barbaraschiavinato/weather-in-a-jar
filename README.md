@@ -18,7 +18,7 @@ The first working version focuses on the WS2812 LED ring, with support for sunri
 - Sunset animation
 - Different solar effects depending on cloud coverage
 - Night mode
-- Optional dedicated lightning LED
+- Optional dedicated lightning LEDs (up to two)
 - Mock API for testing weather conditions
 - Accelerated sunrise/sunset simulation
 - HTTP status endpoint
@@ -181,7 +181,9 @@ When the effective weather state is:
 thunderstorm
 ```
 
-the optional lightning LED can generate random flashes.
+the optional lightning system can generate random flashes.
+
+The first lightning LED is the primary flash source. A second optional LED can be enabled to reproduce the same flash with a configurable delay, creating a more natural sense of propagation through the jar.
 
 A lightning event can contain multiple flashes with random:
 
@@ -190,7 +192,38 @@ A lightning event can contain multiple flashes with random:
 - delay between flashes
 - delay between lightning events
 
-The feature can be enabled or disabled in `config.h`.
+The second LED:
+
+- can be enabled or disabled independently
+- uses a separate GPIO pin
+- mirrors the brightness and duration of the first LED
+- can be delayed relative to the first LED
+- is controlled without blocking the main loop
+
+Typical configuration:
+
+```cpp
+LIGHTNING_LED_PIN
+LIGHTNING_LED_2_PIN
+
+ENABLE_LIGHTNING_LED
+ENABLE_LIGHTNING_LED_2
+
+LIGHTNING_LED_2_DELAY_MS
+```
+
+For example:
+
+```cpp
+constexpr bool ENABLE_LIGHTNING_LED_2 = true;
+constexpr unsigned long LIGHTNING_LED_2_DELAY_MS = 35;
+```
+
+With a delay of `0`, both LEDs flash together.
+
+With a small delay such as `20-60 ms`, the second LED appears slightly after the first and can make the lightning effect feel more spatial.
+
+The lightning mock uses the same lightning engine as real thunderstorm weather, so the second LED and its delay can be tested through the HTTP API.
 
 ---
 
@@ -200,7 +233,7 @@ Current / planned components:
 
 - ESP32-S3
 - WS2812B LED ring
-- optional dedicated lightning LED
+- up to two optional dedicated lightning LEDs
 - mini submersible water pump
 - ultrasonic mist maker
 - external power supply as required
@@ -251,12 +284,16 @@ LED_RING_COUNT
 PUMP_PIN
 MISTER_PIN
 LIGHTNING_LED_PIN
+LIGHTNING_LED_2_PIN
 
 ENABLE_WEATHER_LIGHT
 ENABLE_SOLAR_EFFECTS
 ENABLE_LIGHTNING_LED
+ENABLE_LIGHTNING_LED_2
 ENABLE_PUMP
 ENABLE_MISTER
+
+LIGHTNING_LED_2_DELAY_MS
 
 WEATHER_UPDATE_INTERVAL
 LED_RING_UPDATE_INTERVAL
@@ -369,7 +406,10 @@ Example:
   "lightning": {
     "enabled": true,
     "active": false,
-    "brightness": 0
+    "brightness": 0,
+    "led2Enabled": true,
+    "led2DelayMs": 35,
+    "brightness2": 0
   }
 }
 ```
@@ -380,6 +420,12 @@ Example:
 real
 mock
 ```
+
+The `lightning` object also exposes the runtime state of the optional second lightning LED:
+
+- `led2Enabled` — whether the second LED is enabled
+- `led2DelayMs` — configured delay relative to the first LED
+- `brightness2` — current output brightness of the second LED
 
 ---
 
@@ -407,7 +453,10 @@ Example:
   },
   "lightning": {
     "enabled": true,
-    "pin": 6
+    "pin": 6,
+    "led2Enabled": true,
+    "led2Pin": 22,
+    "led2DelayMs": 35
   },
   "pump": {
     "enabled": false,
@@ -441,6 +490,8 @@ GET /api/mock?weather=rain
 GET /api/mock?weather=snow
 GET /api/mock?weather=thunderstorm
 ```
+
+When thunderstorm mode is enabled, lightning starts using the normal lightning engine. If the second lightning LED is enabled, it follows the first LED using the configured delay.
 
 Example:
 
@@ -719,7 +770,8 @@ Weather API
     ↓
 ESP32-S3
     ├── LED ring
-    ├── lightning LED
+    ├── lightning LED 1
+    ├── lightning LED 2 (optional, delayed)
     ├── mist maker
     └── water pump
 ```

@@ -398,7 +398,7 @@ It also contains weather brightness values and lightning timing configuration.
 
 ### `secrets.h`
 
-Contains private configuration such as Wi-Fi credentials.
+Contains private/local configuration such as Wi-Fi credentials and the location used for weather data.
 
 Example:
 
@@ -407,9 +407,45 @@ Example:
 
 const char* WIFI_SSID = "YOUR_WIFI";
 const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+
+// Location
+constexpr float LATITUDE = 51.51147;
+constexpr float LONGITUDE = -0.13078308;
 ```
 
-Do not commit real credentials to a public repository.
+### Finding latitude and longitude
+
+The coordinates should identify the location for which the Weather Jar retrieves weather information.
+
+An easy way to find them is with Google Maps:
+
+1. Open Google Maps.
+2. Find the location you want the Weather Jar to represent.
+3. Right-click the exact point on the map.
+4. The latitude and longitude appear at the top of the context menu.
+5. Click the coordinates to copy them.
+6. Put the first value in `LATITUDE` and the second value in `LONGITUDE`.
+
+For example, coordinates shown as:
+
+```text
+51.51147, -0.13078308
+```
+
+become:
+
+```cpp
+constexpr float LATITUDE = 51.51147;
+constexpr float LONGITUDE = -0.13078308;
+```
+
+Latitude is always the first value and longitude is the second.
+
+Negative values are significant and must be preserved. For example, locations west of the Greenwich meridian normally have a negative longitude.
+
+The coordinates do not need to identify your exact home address. Coordinates for your town, neighbourhood, or another nearby representative point are normally sufficient for the Weather Jar.
+
+Do not commit real Wi-Fi credentials to a public repository. If the repository is public and you consider your precise location private, use approximate coordinates or keep the location values out of the committed file as well.
 
 ### `types.h`
 

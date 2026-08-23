@@ -8,6 +8,7 @@
 #include "config.h"
 #include "secrets.h"
 #include "types.h"
+#include "weather_colors.h"
 
 // ============================================================
 // HARDWARE
@@ -28,58 +29,6 @@ LightningState lightningState;
 
 unsigned long lastWeatherUpdate = 0;
 unsigned long lastLedUpdate = 0;
-
-// ============================================================
-// COLORS
-// ============================================================
-
-constexpr RgbColor COLOR_OFF = {
-  0, 0, 0
-};
-
-constexpr RgbColor COLOR_WARM_WHITE = {
-  255, 190, 120
-};
-
-constexpr RgbColor COLOR_COOL_WHITE = {
-  200, 220, 255
-};
-
-constexpr RgbColor COLOR_OVERCAST = {
-  95, 110, 125
-};
-
-constexpr RgbColor COLOR_RAIN = {
-  35, 90, 180
-};
-
-constexpr RgbColor COLOR_FOG = {
-  150, 165, 170
-};
-
-constexpr RgbColor COLOR_SNOW = {
-  210, 225, 255
-};
-
-constexpr RgbColor COLOR_STORM = {
-  25, 35, 80
-};
-
-constexpr RgbColor COLOR_DEEP_RED = {
-  150, 10, 0
-};
-
-constexpr RgbColor COLOR_RED = {
-  230, 35, 5
-};
-
-constexpr RgbColor COLOR_ORANGE = {
-  255, 90, 10
-};
-
-constexpr RgbColor COLOR_AMBER = {
-  255, 155, 35
-};
 
 // ============================================================
 // COLOR HELPERS
@@ -392,108 +341,6 @@ WeatherType weatherCodeToType(
 }
 
 // ============================================================
-// WEATHER COLORS
-// ============================================================
-
-RgbColor getWeatherColor(
-  WeatherType weather
-) {
-  switch (weather) {
-    case WeatherType::CLEAR:
-      return COLOR_WARM_WHITE;
-
-    case WeatherType::MAINLY_CLEAR:
-      return {
-        245, 205, 150
-      };
-
-    case WeatherType::PARTLY_CLOUDY:
-      return {
-        220, 220, 205
-      };
-
-    case WeatherType::OVERCAST:
-      return COLOR_OVERCAST;
-
-    case WeatherType::FOG:
-      return COLOR_FOG;
-
-    case WeatherType::DRIZZLE:
-      return {
-        70, 125, 180
-      };
-
-    case WeatherType::RAIN:
-      return COLOR_RAIN;
-
-    case WeatherType::SNOW:
-      return COLOR_SNOW;
-
-    case WeatherType::THUNDERSTORM:
-      return COLOR_STORM;
-
-    default:
-      return COLOR_COOL_WHITE;
-  }
-}
-
-uint8_t getWeatherBrightness(
-  WeatherType weather
-) {
-  switch (weather) {
-    case WeatherType::CLEAR:
-      return BRIGHTNESS_CLEAR;
-
-    case WeatherType::MAINLY_CLEAR:
-      return BRIGHTNESS_MAINLY_CLEAR;
-
-    case WeatherType::PARTLY_CLOUDY:
-      return BRIGHTNESS_PARTLY_CLOUDY;
-
-    case WeatherType::OVERCAST:
-      return BRIGHTNESS_OVERCAST;
-
-    case WeatherType::FOG:
-      return BRIGHTNESS_FOG;
-
-    case WeatherType::DRIZZLE:
-      return BRIGHTNESS_DRIZZLE;
-
-    case WeatherType::RAIN:
-      return BRIGHTNESS_RAIN;
-
-    case WeatherType::SNOW:
-      return BRIGHTNESS_SNOW;
-
-    case WeatherType::THUNDERSTORM:
-      return BRIGHTNESS_THUNDERSTORM;
-
-    default:
-      return BRIGHTNESS_UNKNOWN;
-  }
-}
-
-// ============================================================
-// SUN VISIBILITY
-// ============================================================
-
-SunVisibility getSunVisibility(
-  WeatherType weather
-) {
-  switch (weather) {
-    case WeatherType::CLEAR:
-    case WeatherType::MAINLY_CLEAR:
-      return SunVisibility::FULL;
-
-    case WeatherType::PARTLY_CLOUDY:
-      return SunVisibility::PARTIAL;
-
-    default:
-      return SunVisibility::NONE;
-  }
-}
-
-// ============================================================
 // EFFECTIVE WEATHER
 // ============================================================
 
@@ -683,20 +530,27 @@ LedState calculateSunrise(
     visibility ==
     SunVisibility::FULL
   ) {
-    const RgbColor colors[] = {
-      COLOR_OFF,
-      COLOR_DEEP_RED,
-      COLOR_RED,
-      COLOR_ORANGE,
-      COLOR_AMBER,
-      COLOR_WARM_WHITE,
-      weatherColor
-    };
+    RgbColor colors[
+      SUNRISE_FULL_COLOR_COUNT + 1
+    ];
+
+    for (
+      int i = 0;
+      i < SUNRISE_FULL_COLOR_COUNT;
+      i++
+    ) {
+      colors[i] =
+        SUNRISE_FULL_COLORS[i];
+    }
+
+    colors[
+      SUNRISE_FULL_COLOR_COUNT
+    ] = weatherColor;
 
     result.color =
       interpolateMultiColor(
         colors,
-        7,
+        SUNRISE_FULL_COLOR_COUNT + 1,
         progress
       );
 
@@ -714,18 +568,27 @@ LedState calculateSunrise(
     visibility ==
     SunVisibility::PARTIAL
   ) {
-    const RgbColor colors[] = {
-      COLOR_OFF,
-      {120, 35, 15},
-      {210, 95, 40},
-      {230, 175, 120},
-      weatherColor
-    };
+    RgbColor colors[
+      SUNRISE_PARTIAL_COLOR_COUNT + 1
+    ];
+
+    for (
+      int i = 0;
+      i < SUNRISE_PARTIAL_COLOR_COUNT;
+      i++
+    ) {
+      colors[i] =
+        SUNRISE_PARTIAL_COLORS[i];
+    }
+
+    colors[
+      SUNRISE_PARTIAL_COLOR_COUNT
+    ] = weatherColor;
 
     result.color =
       interpolateMultiColor(
         colors,
-        5,
+        SUNRISE_PARTIAL_COLOR_COUNT + 1,
         progress
       );
 
@@ -783,20 +646,26 @@ LedState calculateSunset(
     visibility ==
     SunVisibility::FULL
   ) {
-    const RgbColor colors[] = {
-      weatherColor,
-      COLOR_WARM_WHITE,
-      COLOR_AMBER,
-      COLOR_ORANGE,
-      COLOR_RED,
-      COLOR_DEEP_RED,
-      COLOR_OFF
-    };
+    RgbColor colors[
+      SUNSET_FULL_COLOR_COUNT + 1
+    ];
+
+    colors[0] =
+      weatherColor;
+
+    for (
+      int i = 0;
+      i < SUNSET_FULL_COLOR_COUNT;
+      i++
+    ) {
+      colors[i + 1] =
+        SUNSET_FULL_COLORS[i];
+    }
 
     result.color =
       interpolateMultiColor(
         colors,
-        7,
+        SUNSET_FULL_COLOR_COUNT + 1,
         progress
       );
 
@@ -813,18 +682,26 @@ LedState calculateSunset(
     visibility ==
     SunVisibility::PARTIAL
   ) {
-    const RgbColor colors[] = {
-      weatherColor,
-      {230, 175, 120},
-      {210, 95, 40},
-      {120, 35, 15},
-      COLOR_OFF
-    };
+    RgbColor colors[
+      SUNSET_PARTIAL_COLOR_COUNT + 1
+    ];
+
+    colors[0] =
+      weatherColor;
+
+    for (
+      int i = 0;
+      i < SUNSET_PARTIAL_COLOR_COUNT;
+      i++
+    ) {
+      colors[i + 1] =
+        SUNSET_PARTIAL_COLORS[i];
+    }
 
     result.color =
       interpolateMultiColor(
         colors,
-        5,
+        SUNSET_PARTIAL_COLOR_COUNT + 1,
         progress
       );
 

@@ -93,21 +93,3 @@ constexpr bool ENABLE_WEATHER_LIGHT = true;
 constexpr bool ENABLE_SOLAR_EFFECTS = true;
 
 
-// ============================================================
-// WEATHER BRIGHTNESS
-// ============================================================
-
-constexpr uint8_t BRIGHTNESS_CLEAR = 180;
-constexpr uint8_t BRIGHTNESS_MAINLY_CLEAR = 170;
-constexpr uint8_t BRIGHTNESS_PARTLY_CLOUDY = 150;
-
-constexpr uint8_t BRIGHTNESS_OVERCAST = 110;
-constexpr uint8_t BRIGHTNESS_FOG = 90;
-
-constexpr uint8_t BRIGHTNESS_DRIZZLE = 125;
-constexpr uint8_t BRIGHTNESS_RAIN = 120;
-
-constexpr uint8_t BRIGHTNESS_SNOW = 150;
-constexpr uint8_t BRIGHTNESS_THUNDERSTORM = 80;
-
-constexpr uint8_t BRIGHTNESS_UNKNOWN = 100;

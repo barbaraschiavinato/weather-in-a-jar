@@ -244,6 +244,76 @@ The pump and mist maker are represented in the configuration and hardware setup 
 
 ---
 
+## Power and Wiring Architecture
+
+The Weather Jar uses a single USB-C power source split into three branches.
+
+```text
+USB-C POWER SPLITTER
+│
+├── USB-C #1 → ESP32-S3
+│
+├── USB-C #2 → 5V/GND adapter
+│               └── WS2812 ring
+│
+└── USB-C #3 → 5V/GND adapter
+                └── MOSFET BOARD
+                    ├── CH1 → lightning LED
+                    ├── CH2 → pump
+                    ├── CH3 → mister
+                    └── CH4 → free
+```
+
+The ESP32-S3 provides the control signals, while the WS2812 ring and the MOSFET-controlled loads receive their power from dedicated branches of the USB-C splitter.
+
+### ESP32 GPIO connections
+
+```text
+ESP32-S3
+│
+├── GPIO 18  LED_RING_PIN
+│      └──────────────→ DIN of the WS2812 ring
+│
+├── GPIO 23  LIGHTNING_LED_PIN
+│      └──────────────→ CH1 MOSFET
+│
+├── GPIO 19  PUMP_PIN
+│      └──────────────→ CH2 MOSFET
+│
+└── GPIO 21  MISTER_PIN
+       └──────────────→ CH3 MOSFET
+```
+
+### MOSFET channels
+
+| Channel | Device | ESP32 control |
+|---|---|---|
+| CH1 | Lightning LED | GPIO 23 |
+| CH2 | Water pump | GPIO 19 |
+| CH3 | Mist maker | GPIO 21 |
+| CH4 | Free / future expansion | — |
+
+CH4 is intentionally left available for future expansion. One possible use is the optional second lightning LED, if testing confirms that the additional channel and GPIO arrangement work as intended.
+
+### WS2812 ring
+
+The WS2812 ring is powered independently from USB-C #2:
+
+```text
+USB-C #2
+    │
+    └── 5V/GND adapter
+            │
+            ├── 5V  → WS2812 5V
+            └── GND → WS2812 GND
+
+ESP32 GPIO 18 ─────→ WS2812 DIN
+```
+
+The ring therefore does not draw its main power through the ESP32-S3. The ESP32 only provides the data signal on `GPIO 18`.
+
+---
+
 ## Files
 
 Typical project structure:

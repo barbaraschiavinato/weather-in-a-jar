@@ -1,12 +1,12 @@
 # Weather Jar
 
-A small ESP32-S3 weather display that represents the current weather using light, atmospheric effects, and optional physical effects such as mist, rain, and lightning.
+A small ESP32 weather display that represents the current weather using light, atmospheric effects, and optional physical effects such as mist, rain, and lightning.
 
 The first working version focuses on the WS2812 LED ring, with support for sunrise/sunset transitions and an HTTP API for status, configuration, and testing.
 
 ## Features
 
-- ESP32-S3 based
+- ESP32 based
 - Weather data from Open-Meteo
 - Automatic Wi-Fi connection
 - Automatic time synchronisation via NTP
@@ -231,7 +231,7 @@ The lightning mock uses the same lightning engine as real thunderstorm weather, 
 
 Current / planned components:
 
-- ESP32-S3
+- ESP32
 - WS2812B LED ring
 - up to two optional dedicated lightning LEDs
 - mini submersible water pump
@@ -251,25 +251,23 @@ The Weather Jar uses a single USB-C power source split into three branches.
 ```text
 USB-C POWER SPLITTER
 │
-├── USB-C #1 → ESP32-S3
+├── USB-C #1 → ESP32
 │
 ├── USB-C #2 → 5V/GND adapter
 │               └── WS2812 ring
 │
 └── USB-C #3 → 5V/GND adapter
                 └── MOSFET BOARD
-                    ├── CH1 → lightning LED
+                    ├── CH1 → lightning LED 1
                     ├── CH2 → pump
                     ├── CH3 → mister
-                    └── CH4 → free
+                    └── CH4 → lightning LED 2
 ```
-
-The ESP32-S3 provides the control signals, while the WS2812 ring and the MOSFET-controlled loads receive their power from dedicated branches of the USB-C splitter.
 
 ### ESP32 GPIO connections
 
 ```text
-ESP32-S3
+ESP32
 │
 ├── GPIO 18  LED_RING_PIN
 │      └──────────────→ DIN of the WS2812 ring
@@ -280,20 +278,23 @@ ESP32-S3
 ├── GPIO 19  PUMP_PIN
 │      └──────────────→ CH2 MOSFET
 │
-└── GPIO 21  MISTER_PIN
-       └──────────────→ CH3 MOSFET
+├── GPIO 21  MISTER_PIN
+│      └──────────────→ CH3 MOSFET
+│
+└── GPIO 22  LIGHTNING_LED_2_PIN
+       └──────────────→ CH4 MOSFET
 ```
 
 ### MOSFET channels
 
 | Channel | Device | ESP32 control |
 |---|---|---|
-| CH1 | Lightning LED | GPIO 23 |
+| CH1 | Lightning LED 1 | GPIO 23 |
 | CH2 | Water pump | GPIO 19 |
 | CH3 | Mist maker | GPIO 21 |
-| CH4 | Free / future expansion | — |
+| CH4 | Lightning LED 2 | GPIO 22 |
 
-CH4 is intentionally left available for future expansion. One possible use is the optional second lightning LED, if testing confirms that the additional channel and GPIO arrangement work as intended.
+The second lightning LED is optional in software and is controlled independently through `LIGHTNING_LED_2_PIN`. Its flash can be delayed relative to the first LED using `LIGHTNING_LED_2_DELAY_MS`.
 
 ### WS2812 ring
 
@@ -310,7 +311,29 @@ USB-C #2
 ESP32 GPIO 18 ─────→ WS2812 DIN
 ```
 
-The ring therefore does not draw its main power through the ESP32-S3. The ESP32 only provides the data signal on `GPIO 18`.
+The ring therefore does not draw its main power through the ESP32. The ESP32 only provides the data signal on `GPIO 18`.
+
+### Lightning LEDs
+
+Both lightning LEDs are powered through the MOSFET board:
+
+```text
+USB-C #3
+    │
+    └── 5V/GND adapter
+            │
+            └── MOSFET BOARD
+                  │
+                  ├── CH1 → lightning LED 1
+                  │          ↑
+                  │       GPIO 23
+                  │
+                  └── CH4 → lightning LED 2
+                             ↑
+                          GPIO 22
+```
+
+LED 1 is the primary lightning output. LED 2 is optional and mirrors each flash with the configured delay.
 
 ---
 
@@ -824,7 +847,7 @@ Current:
 ```text
 Weather API
     ↓
-ESP32-S3
+ESP32
     ↓
 Weather interpretation
     ↓
@@ -838,7 +861,7 @@ Planned:
 ```text
 Weather API
     ↓
-ESP32-S3
+ESP32
     ├── LED ring
     ├── lightning LED 1
     ├── lightning LED 2 (optional, delayed)

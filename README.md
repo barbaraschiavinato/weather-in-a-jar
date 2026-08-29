@@ -4,6 +4,32 @@ A small ESP32 weather display that represents the current weather using light, a
 
 The first working version focuses on the WS2812 LED ring, with support for sunrise/sunset transitions and an HTTP API for status, configuration, and testing.
 
+## Hardware Requirements
+
+Core Components
+* **1x ESP32 Quad MOS Board:** Development board based on the **ESP32-32E** microcontroller, featuring 4 integrated N-channel MOSFET channels. Ideal for controlling DC loads up to 60V silently, without the clicking noise of mechanical relays.
+* **1x WS2812B RGB LED Ring (35 LEDs):** 5V addressable LED ring used to simulate weather colors, sunrises, and sunsets.
+* **1x Mini Submersible Water Pump (5V DC):** Used to physically simulate rain inside the jar.
+* **1x Mini Ultrasonic Mist Maker (5V DC):** Used to generate atmospheric fog/mist based on real-time weather conditions.
+* **2x Standard 5V LEDs (White/Cool White):** Dedicated high-intensity light sources used to simulate quick lightning flashes during thunderstorms.
+
+### 🔌 Power Supply & Wiring (Solderless Setup)
+* **1x Raspberry Pi 5 USB-C Power Adapter (27W - 5.1V / 5A):** Required to deliver the high current (approx. 3.5A peak) needed when the LED ring (at full white brightness), the water pump, and the mist maker run simultaneously.
+* **1x USB-C Female to 5-Pin Screw Terminal Adapter:** Essential to securely connect the Raspberry Pi 5 power supply without cutting its original cable. The 5-pin version includes built-in 5.1kΩ pull-down resistors required to trigger power delivery from smart USB-PD power bricks.
+* **Jumper / Hookup Wires:** Standard electrical wire (AWG22 or AWG24 recommended for main power lines) to link the screw terminals together.
+* **1x Glass Jar or Lantern:** The enclosure housing the electronics and containing the physical atmospheric effects.
+
+Pin Mapping (Optimized for ESP32 Quad MOS)
+When using the ESP32 Quad MOS board, modify the pin definitions in the `config.h` file as follows to match the onboard hardwired MOSFETs and prevent hardware conflicts:
+
+| Component | ESP32 GPIO Pin | Physical Connection on the Board |
+| :--- | :---: | :--- |
+| **RGB LED Ring (Data In)** | `GPIO 13` | Free GPIO 13 Pin Header (Power bypassed directly to power source) |
+| **Mini Water Pump** | `GPIO 16` | **OUT1** Screw Terminal (MOSFET 1) |
+| **Mini Mist Maker** | `GPIO 17` | **OUT2** Screw Terminal (MOSFET 2) |
+| **Lightning LEDs (x2)** | `GPIO 18` | **OUT3** Screw Terminal (MOSFET 3 - Wired in parallel) |
+
+
 ## Features
 
 - ESP32 based

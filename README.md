@@ -13,7 +13,7 @@ Core Components
 * **1x Mini Ultrasonic Mist Maker (5V DC):** Used to generate atmospheric fog/mist based on real-time weather conditions.
 * **2x Standard 5V LEDs (White/Cool White):** Dedicated high-intensity light sources used to simulate quick lightning flashes during thunderstorms.
 
-### 🔌 Power Supply & Wiring (Solderless Setup)
+### Power Supply & Wiring (Solderless Setup)
 * **1x Raspberry Pi 5 USB-C Power Adapter (27W - 5.1V / 5A):** Required to deliver the high current (approx. 3.5A peak) needed when the LED ring (at full white brightness), the water pump, and the mist maker run simultaneously.
 * **1x USB-C Female to 5-Pin Screw Terminal Adapter:** Essential to securely connect the Raspberry Pi 5 power supply without cutting its original cable. The 5-pin version includes built-in 5.1kΩ pull-down resistors required to trigger power delivery from smart USB-PD power bricks.
 * **Jumper / Hookup Wires:** Standard electrical wire (AWG22 or AWG24 recommended for main power lines) to link the screw terminals together.

@@ -15,7 +15,6 @@
 // ============================================================
 
 CRGB leds[LED_RING_COUNT];
-
 WebServer server(80);
 
 // ============================================================
@@ -30,52 +29,84 @@ LightningState lightningState;
 unsigned long lastWeatherUpdate = 0;
 unsigned long lastLedUpdate = 0;
 
+bool startupError = false;
+
+// ============================================================
+// RING LIGHTNING STATE
+// ============================================================
+
+bool ringLightningActive = false;
+int ringLightningStart = 0;
+int ringLightningLength = 0;
+uint8_t ringLightningBrightness = 0;
+
+// ============================================================
+// MOCK LOOP STATE
+// ============================================================
+
+struct MockLoopState {
+  bool enabled = false;
+  bool blackout = false;
+  int index = 0;
+  unsigned long nextChangeAt = 0;
+};
+
+MockLoopState mockLoopState;
+
+
+// ============================================================
+// STARTUP STATUS LIGHT
+// ============================================================
+
+void showStartupStatus(
+  uint8_t r,
+  uint8_t g,
+  uint8_t b
+) {
+  // Startup diagnostics use a moderate fixed brightness and bypass
+  // the weather state entirely.
+  FastLED.setBrightness(100);
+
+  fill_solid(
+    leds,
+    LED_RING_COUNT,
+    CRGB(r, g, b)
+  );
+
+  FastLED.show();
+}
+
+void showStartupYellow() {
+  showStartupStatus(255, 180, 0);
+}
+
+void showStartupGreen() {
+  showStartupStatus(0, 255, 0);
+}
+
+void showStartupRed() {
+  showStartupStatus(255, 0, 0);
+}
+
 // ============================================================
 // COLOR HELPERS
 // ============================================================
 
-RgbColor interpolateColor(
-  const RgbColor& a,
-  const RgbColor& b,
-  float t
-) {
-  t = constrain(
-    t,
-    0.0f,
-    1.0f
-  );
+RgbColor interpolateColor(const RgbColor& a, const RgbColor& b, float t) {
+  t = constrain(t, 0.0f, 1.0f);
 
   RgbColor result;
 
-  result.r = (uint8_t)(
-    a.r +
-    (b.r - a.r) * t
-  );
-
-  result.g = (uint8_t)(
-    a.g +
-    (b.g - a.g) * t
-  );
-
-  result.b = (uint8_t)(
-    a.b +
-    (b.b - a.b) * t
-  );
+  result.r = (uint8_t)(a.r + (b.r - a.r) * t);
+  result.g = (uint8_t)(a.g + (b.g - a.g) * t);
+  result.b = (uint8_t)(a.b + (b.b - a.b) * t);
 
   return result;
 }
 
 float smoothStep(float t) {
-  t = constrain(
-    t,
-    0.0f,
-    1.0f
-  );
-
-  return
-    t *
-    t *
-    (3.0f - 2.0f * t);
+  t = constrain(t, 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
 }
 
 RgbColor interpolateMultiColor(
@@ -83,33 +114,18 @@ RgbColor interpolateMultiColor(
   int colorCount,
   float progress
 ) {
-  progress = constrain(
-    progress,
-    0.0f,
-    1.0f
-  );
+  progress = constrain(progress, 0.0f, 1.0f);
 
   if (colorCount <= 1) {
     return colors[0];
   }
 
-  float scaled =
-    progress *
-    (colorCount - 1);
+  float scaled = progress * (colorCount - 1);
+  int index = floor(scaled);
+  float localProgress = scaled - index;
 
-  int index =
-    floor(scaled);
-
-  float localProgress =
-    scaled - index;
-
-  if (
-    index >=
-    colorCount - 1
-  ) {
-    return colors[
-      colorCount - 1
-    ];
+  if (index >= colorCount - 1) {
+    return colors[colorCount - 1];
   }
 
   return interpolateColor(
@@ -123,74 +139,37 @@ RgbColor interpolateMultiColor(
 // STRING HELPERS
 // ============================================================
 
-String weatherToString(
-  WeatherType weather
-) {
+String weatherToString(WeatherType weather) {
   switch (weather) {
-    case WeatherType::CLEAR:
-      return "clear";
-
-    case WeatherType::MAINLY_CLEAR:
-      return "mainly_clear";
-
-    case WeatherType::PARTLY_CLOUDY:
-      return "partly_cloudy";
-
-    case WeatherType::OVERCAST:
-      return "overcast";
-
-    case WeatherType::FOG:
-      return "fog";
-
-    case WeatherType::DRIZZLE:
-      return "drizzle";
-
-    case WeatherType::RAIN:
-      return "rain";
-
-    case WeatherType::SNOW:
-      return "snow";
-
-    case WeatherType::THUNDERSTORM:
-      return "thunderstorm";
-
-    default:
-      return "unknown";
+    case WeatherType::CLEAR: return "clear";
+    case WeatherType::MAINLY_CLEAR: return "mainly_clear";
+    case WeatherType::PARTLY_CLOUDY: return "partly_cloudy";
+    case WeatherType::OVERCAST: return "overcast";
+    case WeatherType::FOG: return "fog";
+    case WeatherType::DRIZZLE: return "drizzle";
+    case WeatherType::RAIN: return "rain";
+    case WeatherType::SNOW: return "snow";
+    case WeatherType::THUNDERSTORM: return "thunderstorm";
+    default: return "unknown";
   }
 }
 
-String periodToString(
-  DayPeriod period
-) {
+String periodToString(DayPeriod period) {
   switch (period) {
-    case DayPeriod::NIGHT:
-      return "night";
-
-    case DayPeriod::SUNRISE:
-      return "sunrise";
-
-    case DayPeriod::DAY:
-      return "day";
-
-    case DayPeriod::SUNSET:
-      return "sunset";
+    case DayPeriod::NIGHT: return "night";
+    case DayPeriod::SUNRISE: return "sunrise";
+    case DayPeriod::DAY: return "day";
+    case DayPeriod::SUNSET: return "sunset";
   }
 
   return "unknown";
 }
 
-String visibilityToString(
-  SunVisibility visibility
-) {
+String visibilityToString(SunVisibility visibility) {
   switch (visibility) {
-    case SunVisibility::FULL:
-      return "full";
-
-    case SunVisibility::PARTIAL:
-      return "partial";
-
-    case SunVisibility::NONE:
-      return "none";
+    case SunVisibility::FULL: return "full";
+    case SunVisibility::PARTIAL: return "partial";
+    case SunVisibility::NONE: return "none";
   }
 
   return "none";
@@ -200,10 +179,7 @@ String visibilityToString(
 // PARSERS
 // ============================================================
 
-bool parseWeather(
-  const String& value,
-  WeatherType& result
-) {
+bool parseWeather(const String& value, WeatherType& result) {
   if (value == "clear") {
     result = WeatherType::CLEAR;
     return true;
@@ -252,10 +228,7 @@ bool parseWeather(
   return false;
 }
 
-bool parsePeriod(
-  const String& value,
-  DayPeriod& result
-) {
+bool parsePeriod(const String& value, DayPeriod& result) {
   if (value == "night") {
     result = DayPeriod::NIGHT;
     return true;
@@ -283,36 +256,17 @@ bool parsePeriod(
 // OPEN-METEO WEATHER CODE
 // ============================================================
 
-WeatherType weatherCodeToType(
-  int code
-) {
-  if (code == 0) {
-    return WeatherType::CLEAR;
-  }
+WeatherType weatherCodeToType(int code) {
+  if (code == 0) return WeatherType::CLEAR;
+  if (code == 1) return WeatherType::MAINLY_CLEAR;
+  if (code == 2) return WeatherType::PARTLY_CLOUDY;
+  if (code == 3) return WeatherType::OVERCAST;
 
-  if (code == 1) {
-    return WeatherType::MAINLY_CLEAR;
-  }
-
-  if (code == 2) {
-    return WeatherType::PARTLY_CLOUDY;
-  }
-
-  if (code == 3) {
-    return WeatherType::OVERCAST;
-  }
-
-  if (
-    code == 45 ||
-    code == 48
-  ) {
+  if (code == 45 || code == 48) {
     return WeatherType::FOG;
   }
 
-  if (
-    code >= 51 &&
-    code <= 57
-  ) {
+  if (code >= 51 && code <= 57) {
     return WeatherType::DRIZZLE;
   }
 
@@ -330,10 +284,7 @@ WeatherType weatherCodeToType(
     return WeatherType::SNOW;
   }
 
-  if (
-    code >= 95 &&
-    code <= 99
-  ) {
+  if (code >= 95 && code <= 99) {
     return WeatherType::THUNDERSTORM;
   }
 
@@ -345,10 +296,7 @@ WeatherType weatherCodeToType(
 // ============================================================
 
 WeatherType getEffectiveWeather() {
-  if (
-    mockState.enabled &&
-    mockState.overrideWeather
-  ) {
+  if (mockState.enabled && mockState.overrideWeather) {
     return mockState.weather;
   }
 
@@ -364,8 +312,7 @@ DayPeriod getRealPeriod() {
     return DayPeriod::DAY;
   }
 
-  time_t now =
-    time(nullptr);
+  time_t now = time(nullptr);
 
   time_t sunriseStart =
     weatherState.sunrise -
@@ -383,30 +330,16 @@ DayPeriod getRealPeriod() {
     weatherState.sunset +
     SOLAR_EFFECT_HALF_WINDOW_SECONDS;
 
-  if (now < sunriseStart) {
-    return DayPeriod::NIGHT;
-  }
-
-  if (now <= sunriseEnd) {
-    return DayPeriod::SUNRISE;
-  }
-
-  if (now < sunsetStart) {
-    return DayPeriod::DAY;
-  }
-
-  if (now <= sunsetEnd) {
-    return DayPeriod::SUNSET;
-  }
+  if (now < sunriseStart) return DayPeriod::NIGHT;
+  if (now <= sunriseEnd) return DayPeriod::SUNRISE;
+  if (now < sunsetStart) return DayPeriod::DAY;
+  if (now <= sunsetEnd) return DayPeriod::SUNSET;
 
   return DayPeriod::NIGHT;
 }
 
 DayPeriod getEffectivePeriod() {
-  if (
-    mockState.enabled &&
-    mockState.overridePeriod
-  ) {
+  if (mockState.enabled && mockState.overridePeriod) {
     return mockState.period;
   }
 
@@ -417,16 +350,10 @@ DayPeriod getEffectivePeriod() {
 // SOLAR PROGRESS
 // ============================================================
 
-float getRealSolarProgress(
-  DayPeriod period
-) {
-  time_t now =
-    time(nullptr);
+float getRealSolarProgress(DayPeriod period) {
+  time_t now = time(nullptr);
 
-  if (
-    period ==
-    DayPeriod::SUNRISE
-  ) {
+  if (period == DayPeriod::SUNRISE) {
     time_t start =
       weatherState.sunrise -
       SOLAR_EFFECT_HALF_WINDOW_SECONDS;
@@ -443,10 +370,7 @@ float getRealSolarProgress(
     );
   }
 
-  if (
-    period ==
-    DayPeriod::SUNSET
-  ) {
+  if (period == DayPeriod::SUNSET) {
     time_t start =
       weatherState.sunset -
       SOLAR_EFFECT_HALF_WINDOW_SECONDS;
@@ -476,8 +400,7 @@ float getMockSolarProgress() {
   }
 
   float elapsed =
-    (millis() -
-     mockState.startedAt) /
+    (millis() - mockState.startedAt) /
     1000.0f;
 
   return constrain(
@@ -487,9 +410,7 @@ float getMockSolarProgress() {
   );
 }
 
-float getSolarProgress(
-  DayPeriod period
-) {
+float getSolarProgress(DayPeriod period) {
   if (
     mockState.enabled &&
     mockState.overridePeriod &&
@@ -501,9 +422,7 @@ float getSolarProgress(
     return getMockSolarProgress();
   }
 
-  return getRealSolarProgress(
-    period
-  );
+  return getRealSolarProgress(period);
 }
 
 // ============================================================
@@ -523,13 +442,9 @@ LedState calculateSunrise(
   uint8_t weatherBrightness =
     getWeatherBrightness(weather);
 
-  progress =
-    smoothStep(progress);
+  progress = smoothStep(progress);
 
-  if (
-    visibility ==
-    SunVisibility::FULL
-  ) {
+  if (visibility == SunVisibility::FULL) {
     RgbColor colors[
       SUNRISE_FULL_COLOR_COUNT + 1
     ];
@@ -561,8 +476,7 @@ LedState calculateSunrise(
         progress
       );
 
-    result.effect =
-      "sunrise";
+    result.effect = "sunrise";
 
   } else if (
     visibility ==
@@ -639,13 +553,9 @@ LedState calculateSunset(
   uint8_t weatherBrightness =
     getWeatherBrightness(weather);
 
-  progress =
-    smoothStep(progress);
+  progress = smoothStep(progress);
 
-  if (
-    visibility ==
-    SunVisibility::FULL
-  ) {
+  if (visibility == SunVisibility::FULL) {
     RgbColor colors[
       SUNSET_FULL_COLOR_COUNT + 1
     ];
@@ -757,26 +667,17 @@ LedState calculateLedState() {
   SunVisibility visibility =
     getSunVisibility(weather);
 
-  if (
-    period ==
-    DayPeriod::NIGHT
-  ) {
-    result.color =
-      COLOR_OFF;
-
-    result.brightness =
-      0;
-
-    result.effect =
-      "night";
+  if (period == DayPeriod::NIGHT) {
+    result.color = COLOR_OFF;
+    result.brightness = 0;
+    result.effect = "night";
 
     return result;
   }
 
   if (
     ENABLE_SOLAR_EFFECTS &&
-    period ==
-    DayPeriod::SUNRISE
+    period == DayPeriod::SUNRISE
   ) {
     return calculateSunrise(
       weather,
@@ -787,8 +688,7 @@ LedState calculateLedState() {
 
   if (
     ENABLE_SOLAR_EFFECTS &&
-    period ==
-    DayPeriod::SUNSET
+    period == DayPeriod::SUNSET
   ) {
     return calculateSunset(
       weather,
@@ -830,21 +730,61 @@ bool ledOutputChanged(
 void applyLedState(
   const LedState& state
 ) {
-  FastLED.setBrightness(
-    state.brightness
-  );
+  // Keep FastLED at full output so lightning can be much
+  // brighter than the weather background.
+  FastLED.setBrightness(255);
 
-  CRGB color(
-    state.color.r,
-    state.color.g,
-    state.color.b
+  uint8_t baseR =
+    ((uint16_t)state.color.r *
+     state.brightness) /
+    255;
+
+  uint8_t baseG =
+    ((uint16_t)state.color.g *
+     state.brightness) /
+    255;
+
+  uint8_t baseB =
+    ((uint16_t)state.color.b *
+     state.brightness) /
+    255;
+
+  CRGB baseColor(
+    baseR,
+    baseG,
+    baseB
   );
 
   fill_solid(
     leds,
     LED_RING_COUNT,
-    color
+    baseColor
   );
+
+  // Lightning overlay: 3-7 adjacent LEDs, cold white.
+  if (
+    ENABLE_RING_LIGHTNING &&
+    ringLightningActive
+  ) {
+    for (
+      int i = 0;
+      i < ringLightningLength;
+      i++
+    ) {
+      int index =
+        (
+          ringLightningStart +
+          i
+        ) %
+        LED_RING_COUNT;
+
+      leds[index] = CRGB(
+        ringLightningBrightness,
+        ringLightningBrightness,
+        255
+      );
+    }
+  }
 
   FastLED.show();
 }
@@ -889,8 +829,14 @@ void stopLightningOutputs() {
   setLightningBrightness(0);
   setLightningBrightness2(0);
 
-  lightningState.led2Pending = false;
-  lightningState.led2InFlash = false;
+  lightningState.led2Pending =
+    false;
+
+  lightningState.led2InFlash =
+    false;
+
+  ringLightningActive =
+    false;
 }
 
 void scheduleNextLightningEvent() {
@@ -917,6 +863,14 @@ void beginLightningEvent() {
 
   lightningState.stateUntil =
     millis();
+
+  Serial.print(
+    "Lightning event started. Flashes: "
+  );
+
+  Serial.println(
+    lightningState.flashesRemaining
+  );
 }
 
 void updateLightningLed2(
@@ -928,23 +882,101 @@ void updateLightningLed2(
 
   if (
     lightningState.led2Pending &&
-    (long)(now - lightningState.led2StartAt) >= 0
+    (long)(
+      now -
+      lightningState.led2StartAt
+    ) >= 0
   ) {
     setLightningBrightness2(
       lightningState.led2PendingBrightness
     );
 
-    lightningState.led2Pending = false;
-    lightningState.led2InFlash = true;
+    lightningState.led2Pending =
+      false;
+
+    lightningState.led2InFlash =
+      true;
   }
 
   if (
     lightningState.led2InFlash &&
-    (long)(now - lightningState.led2EndAt) >= 0
+    (long)(
+      now -
+      lightningState.led2EndAt
+    ) >= 0
   ) {
     setLightningBrightness2(0);
-    lightningState.led2InFlash = false;
+
+    lightningState.led2InFlash =
+      false;
   }
+}
+
+void beginRingLightningFlash(
+  uint8_t brightness
+) {
+  if (!ENABLE_RING_LIGHTNING) {
+    return;
+  }
+
+  ringLightningStart =
+    random(
+      0,
+      LED_RING_COUNT
+    );
+
+  ringLightningLength =
+    random(
+      3,
+      8
+    );
+
+  ringLightningBrightness =
+    brightness;
+
+  ringLightningActive =
+    true;
+
+  Serial.print(
+    "Ring lightning: start="
+  );
+
+  Serial.print(
+    ringLightningStart
+  );
+
+  Serial.print(
+    " length="
+  );
+
+  Serial.print(
+    ringLightningLength
+  );
+
+  Serial.print(
+    " brightness="
+  );
+
+  Serial.println(
+    ringLightningBrightness
+  );
+
+  applyLedState(
+    ledState
+  );
+}
+
+void endRingLightningFlash() {
+  if (!ringLightningActive) {
+    return;
+  }
+
+  ringLightningActive =
+    false;
+
+  applyLedState(
+    ledState
+  );
 }
 
 void updateLightning() {
@@ -952,12 +984,30 @@ void updateLightning() {
     getEffectiveWeather() ==
     WeatherType::THUNDERSTORM;
 
+  bool lightningEnabled =
+    ENABLE_LIGHTNING_LED ||
+    ENABLE_LIGHTNING_LED_2 ||
+    ENABLE_RING_LIGHTNING;
+
   if (
-    !ENABLE_LIGHTNING_LED ||
-    !thunderstorm
+    !lightningEnabled ||
+    !thunderstorm ||
+    mockLoopState.blackout
   ) {
-    lightningState.active = false;
+    if (ringLightningActive) {
+      ringLightningActive =
+        false;
+
+      applyLedState(
+        ledState
+      );
+    }
+
+    lightningState.active =
+      false;
+
     stopLightningOutputs();
+
     return;
   }
 
@@ -967,7 +1017,8 @@ void updateLightning() {
   updateLightningLed2(now);
 
   if (
-    lightningState.nextEventAt == 0
+    lightningState.nextEventAt ==
+    0
   ) {
     scheduleNextLightningEvent();
   }
@@ -995,6 +1046,7 @@ void updateLightning() {
     return;
   }
 
+  // FLASH START
   if (!lightningState.inFlash) {
     uint8_t brightness =
       random(
@@ -1008,6 +1060,30 @@ void updateLightning() {
         LIGHTNING_FLASH_MAX_MS + 1
       );
 
+    Serial.print(
+      "Lightning flash: brightness="
+    );
+
+    Serial.print(
+      brightness
+    );
+
+    Serial.print(
+      " duration="
+    );
+
+    Serial.print(
+      flashDuration
+    );
+
+    Serial.println(
+      " ms"
+    );
+
+    beginRingLightningFlash(
+      brightness
+    );
+
     setLightningBrightness(
       brightness
     );
@@ -1016,52 +1092,67 @@ void updateLightning() {
       true;
 
     lightningState.stateUntil =
-      now + flashDuration;
+      now +
+      flashDuration;
 
     if (ENABLE_LIGHTNING_LED_2) {
       lightningState.led2PendingBrightness =
         brightness;
+
       lightningState.led2StartAt =
-        now + LIGHTNING_LED_2_DELAY_MS;
+        now +
+        LIGHTNING_LED_2_DELAY_MS;
+
       lightningState.led2EndAt =
-        lightningState.led2StartAt + flashDuration;
-      lightningState.led2Pending = true;
-      lightningState.led2InFlash = false;
+        lightningState.led2StartAt +
+        flashDuration;
+
+      lightningState.led2Pending =
+        true;
+
+      lightningState.led2InFlash =
+        false;
     }
 
-  } else {
-    setLightningBrightness(0);
+    return;
+  }
 
-    lightningState.inFlash =
+  // FLASH END
+  setLightningBrightness(0);
+  endRingLightningFlash();
+
+  lightningState.inFlash =
+    false;
+
+  lightningState.flashesRemaining--;
+
+  if (
+    lightningState.flashesRemaining <= 0
+  ) {
+    lightningState.active =
       false;
 
-    lightningState.flashesRemaining--;
+    Serial.println(
+      "Lightning event finished."
+    );
 
-    if (
-      lightningState.flashesRemaining <= 0
-    ) {
-      lightningState.active =
-        false;
+    scheduleNextLightningEvent();
 
-      scheduleNextLightningEvent();
-
-    } else {
-      // Ensure the delayed second flash has time to finish before
-      // starting the next flash in the same lightning event.
-      unsigned long led2Extra =
-        ENABLE_LIGHTNING_LED_2
-          ? LIGHTNING_LED_2_DELAY_MS
-          : 0;
-
-      lightningState.stateUntil =
-        now +
-        led2Extra +
-        random(
-          LIGHTNING_GAP_MIN_MS,
-          LIGHTNING_GAP_MAX_MS + 1
-        );
-    }
+    return;
   }
+
+  unsigned long led2Extra =
+    ENABLE_LIGHTNING_LED_2
+      ? LIGHTNING_LED_2_DELAY_MS
+      : 0;
+
+  lightningState.stateUntil =
+    now +
+    led2Extra +
+    random(
+      LIGHTNING_GAP_MIN_MS,
+      LIGHTNING_GAP_MAX_MS + 1
+    );
 }
 
 // ============================================================
@@ -1098,11 +1189,9 @@ bool updateWeather() {
     "Fetching weather..."
   );
 
-  int httpCode = -1;
-
   http.begin(url);
 
-  httpCode =
+  int httpCode =
     http.GET();
 
   if (
@@ -1254,10 +1343,251 @@ bool updateWeather() {
 }
 
 // ============================================================
+// MOCK LOOP
+// ============================================================
+
+void applyMockLoopStep(int index) {
+  // Reset the normal mock and every lightning output before
+  // applying the next visual state.
+  mockState = MockState();
+  lightningState = LightningState();
+  stopLightningOutputs();
+
+  mockState.enabled = true;
+  mockState.startedAt = millis();
+
+  switch (index) {
+    case 0:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::CLEAR;
+      break;
+
+    case 1:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::MAINLY_CLEAR;
+      break;
+
+    case 2:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::PARTLY_CLOUDY;
+      break;
+
+    case 3:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::OVERCAST;
+      break;
+
+    case 4:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::FOG;
+      break;
+
+    case 5:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::DRIZZLE;
+      break;
+
+    case 6:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::RAIN;
+      break;
+
+    case 7:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::SNOW;
+      break;
+
+    case 8:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::THUNDERSTORM;
+
+      // Start the first lightning event immediately so the
+      // 30-second thunderstorm test does not begin with a long wait.
+      if (
+        ENABLE_LIGHTNING_LED ||
+        ENABLE_LIGHTNING_LED_2 ||
+        ENABLE_RING_LIGHTNING
+      ) {
+        beginLightningEvent();
+      }
+      break;
+
+    case 9:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::CLEAR;
+
+      mockState.overridePeriod = true;
+      mockState.period = DayPeriod::SUNRISE;
+
+      // getMockSolarProgress() uses 3600 / speed.
+      // 3600 / 120 = 30 seconds.
+      mockState.speed = 120.0f;
+      mockState.startedAt = millis();
+      break;
+
+    case 10:
+      mockState.overrideWeather = true;
+      mockState.weather = WeatherType::CLEAR;
+
+      mockState.overridePeriod = true;
+      mockState.period = DayPeriod::SUNSET;
+
+      // 3600 / 120 = 30 seconds.
+      mockState.speed = 120.0f;
+      mockState.startedAt = millis();
+      break;
+  }
+
+  ledState = calculateLedState();
+  applyLedState(ledState);
+
+  Serial.print("Mock loop step ");
+  Serial.print(index + 1);
+  Serial.print("/");
+  Serial.print(MOCK_LOOP_COUNT);
+  Serial.print(": ");
+
+  if (index <= 8) {
+    Serial.println(
+      weatherToString(
+        getEffectiveWeather()
+      )
+    );
+  } else {
+    Serial.println(
+      periodToString(
+        getEffectivePeriod()
+      )
+    );
+  }
+}
+
+void startMockLoop() {
+  mockLoopState = MockLoopState();
+
+  mockLoopState.enabled = true;
+  mockLoopState.blackout = false;
+  mockLoopState.index = 0;
+
+  applyMockLoopStep(
+    mockLoopState.index
+  );
+
+  mockLoopState.nextChangeAt =
+    millis() +
+    MOCK_LOOP_STEP_MS;
+
+  Serial.println(
+    "Mock loop started."
+  );
+}
+
+void stopMockLoop(
+  bool restoreRealWeather = true
+) {
+  bool wasEnabled =
+    mockLoopState.enabled;
+
+  mockLoopState =
+    MockLoopState();
+
+  if (!wasEnabled) {
+    return;
+  }
+
+  mockState =
+    MockState();
+
+  lightningState =
+    LightningState();
+
+  stopLightningOutputs();
+
+  if (restoreRealWeather) {
+    ledState =
+      calculateLedState();
+
+    applyLedState(
+      ledState
+    );
+  }
+
+  Serial.println(
+    "Mock loop stopped."
+  );
+}
+
+void updateMockLoop() {
+  if (!mockLoopState.enabled) {
+    return;
+  }
+
+  unsigned long now =
+    millis();
+
+  if (
+    (long)(
+      now -
+      mockLoopState.nextChangeAt
+    ) < 0
+  ) {
+    return;
+  }
+
+  // 30-second effect finished: switch the whole ring off for
+  // one second before moving to the next mock.
+  if (!mockLoopState.blackout) {
+    mockLoopState.blackout = true;
+
+    lightningState =
+      LightningState();
+
+    stopLightningOutputs();
+
+    FastLED.clear();
+    FastLED.show();
+
+    Serial.println(
+      "Mock loop: blackout"
+    );
+
+    mockLoopState.nextChangeAt =
+      now +
+      MOCK_LOOP_BLACKOUT_MS;
+
+    return;
+  }
+
+  // Blackout finished: advance to the next effect.
+  mockLoopState.blackout = false;
+
+  mockLoopState.index++;
+
+  if (
+    mockLoopState.index >=
+    MOCK_LOOP_COUNT
+  ) {
+    mockLoopState.index = 0;
+  }
+
+  applyMockLoopStep(
+    mockLoopState.index
+  );
+
+  mockLoopState.nextChangeAt =
+    now +
+    MOCK_LOOP_STEP_MS;
+}
+
+// ============================================================
 // MOCK EXPIRATION
 // ============================================================
 
 void updateMockExpiration() {
+  if (mockLoopState.enabled) {
+    return;
+  }
+
   if (!mockState.enabled) {
     return;
   }
@@ -1322,9 +1652,13 @@ void handleStatus() {
       .toString();
 
   doc["source"] =
-    mockState.enabled
-      ? "mock"
-      : "real";
+    mockLoopState.enabled
+      ? "mock_loop"
+      : (
+          mockState.enabled
+            ? "mock"
+            : "real"
+        );
 
   doc["weather"] =
     weatherToString(weather);
@@ -1349,6 +1683,24 @@ void handleStatus() {
   doc["rain"] =
     weatherState.rain;
 
+  JsonObject mockLoop =
+    doc["mockLoop"].to<JsonObject>();
+
+  mockLoop["enabled"] =
+    mockLoopState.enabled;
+
+  mockLoop["blackout"] =
+    mockLoopState.blackout;
+
+  mockLoop["index"] =
+    mockLoopState.index;
+
+  mockLoop["stepSeconds"] =
+    MOCK_LOOP_STEP_MS / 1000UL;
+
+  mockLoop["blackoutMs"] =
+    MOCK_LOOP_BLACKOUT_MS;
+
   JsonObject ring =
     doc["ring"].to<JsonObject>();
 
@@ -1372,6 +1724,24 @@ void handleStatus() {
 
   ring["b"] =
     ledState.color.b;
+
+  JsonObject ringLightning =
+    ring["lightning"].to<JsonObject>();
+
+  ringLightning["enabled"] =
+    ENABLE_RING_LIGHTNING;
+
+  ringLightning["active"] =
+    ringLightningActive;
+
+  ringLightning["start"] =
+    ringLightningStart;
+
+  ringLightning["length"] =
+    ringLightningLength;
+
+  ringLightning["brightness"] =
+    ringLightningBrightness;
 
   JsonObject lightning =
     doc["lightning"].to<JsonObject>();
@@ -1427,6 +1797,18 @@ void handleConfig() {
     2 /
     60;
 
+  JsonObject mockLoop =
+    doc["mockLoop"].to<JsonObject>();
+
+  mockLoop["stepSeconds"] =
+    MOCK_LOOP_STEP_MS / 1000UL;
+
+  mockLoop["blackoutMs"] =
+    MOCK_LOOP_BLACKOUT_MS;
+
+  mockLoop["count"] =
+    MOCK_LOOP_COUNT;
+
   JsonObject ring =
     doc["ring"].to<JsonObject>();
 
@@ -1441,6 +1823,9 @@ void handleConfig() {
 
   ring["updateIntervalMs"] =
     LED_RING_UPDATE_INTERVAL;
+
+  ring["lightningEnabled"] =
+    ENABLE_RING_LIGHTNING;
 
   JsonObject lightning =
     doc["lightning"].to<JsonObject>();
@@ -1497,6 +1882,10 @@ void handleConfig() {
 // ============================================================
 
 void handleMock() {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
   bool changed = false;
   bool restartAnimation = false;
 
@@ -1629,14 +2018,19 @@ void handleMock() {
   mockState.enabled =
     true;
 
-  // A thunderstorm mock starts a lightning event immediately,
-  // so both configured lightning LEDs can be tested without waiting
-  // for the normal random event interval.
+  // Thunderstorm mock starts a lightning event immediately.
   if (
-    getEffectiveWeather() == WeatherType::THUNDERSTORM &&
-    ENABLE_LIGHTNING_LED
+    getEffectiveWeather() ==
+      WeatherType::THUNDERSTORM &&
+    (
+      ENABLE_LIGHTNING_LED ||
+      ENABLE_LIGHTNING_LED_2 ||
+      ENABLE_RING_LIGHTNING
+    )
   ) {
-    lightningState = LightningState();
+    lightningState =
+      LightningState();
+
     beginLightningEvent();
   }
 
@@ -1661,10 +2055,54 @@ void handleMock() {
 }
 
 // ============================================================
+// API - MOCK LOOP
+// ============================================================
+
+void handleMockLoop() {
+  startMockLoop();
+
+  JsonDocument doc;
+
+  doc["mockLoop"] = "started";
+  doc["stepSeconds"] = MOCK_LOOP_STEP_MS / 1000UL;
+  doc["blackoutMs"] = MOCK_LOOP_BLACKOUT_MS;
+  doc["effects"] = MOCK_LOOP_COUNT;
+
+  String response;
+  serializeJsonPretty(doc, response);
+
+  server.send(
+    200,
+    "application/json",
+    response
+  );
+}
+
+void handleMockLoopOff() {
+  stopMockLoop(true);
+
+  JsonDocument doc;
+  doc["mockLoop"] = "stopped";
+
+  String response;
+  serializeJsonPretty(doc, response);
+
+  server.send(
+    200,
+    "application/json",
+    response
+  );
+}
+
+// ============================================================
 // API - MOCK OFF
 // ============================================================
 
 void handleMockOff() {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
   mockState =
     MockState();
 
@@ -1734,12 +2172,20 @@ void handleRoot() {
     "GET /api/mock?weather=rain&period=sunrise\n"
     "GET /api/mock?weather=rain&period=sunset\n"
     "\n"
+    "RING LIGHTNING\n"
+    "GET /api/mock?weather=thunderstorm\n"
+    "\n"
     "ACCELERATED SOLAR EFFECT\n"
     "GET /api/mock?weather=clear&period=sunrise&speed=60\n"
     "GET /api/mock?weather=clear&period=sunset&speed=60\n"
     "\n"
     "TEMPORARY MOCK\n"
     "GET /api/mock?weather=thunderstorm&duration=60\n"
+    "\n"
+    "AUTOMATIC MOCK LOOP\n"
+    "GET /api/mock/loop\n"
+    "GET /api/mock/loop/off\n"
+    "Each effect runs for 30 seconds with 1 second off between effects.\n"
     "\n"
     "DISABLE MOCK\n"
     "GET /api/mock/off\n";
@@ -1762,7 +2208,6 @@ void setupServer() {
     handleRoot
   );
 
-  // Status: accept both forms.
   server.on(
     "/api/status",
     HTTP_GET,
@@ -1775,7 +2220,6 @@ void setupServer() {
     handleStatus
   );
 
-  // Config: accept both forms.
   server.on(
     "/api/config",
     HTTP_GET,
@@ -1788,7 +2232,6 @@ void setupServer() {
     handleConfig
   );
 
-  // Mock: accept both forms.
   server.on(
     "/api/mock",
     HTTP_GET,
@@ -1799,6 +2242,30 @@ void setupServer() {
     "/api/mock/",
     HTTP_GET,
     handleMock
+  );
+
+  server.on(
+    "/api/mock/loop",
+    HTTP_GET,
+    handleMockLoop
+  );
+
+  server.on(
+    "/api/mock/loop/",
+    HTTP_GET,
+    handleMockLoop
+  );
+
+  server.on(
+    "/api/mock/loop/off",
+    HTTP_GET,
+    handleMockLoopOff
+  );
+
+  server.on(
+    "/api/mock/loop/off/",
+    HTTP_GET,
+    handleMockLoopOff
   );
 
   server.on(
@@ -1817,22 +2284,22 @@ void setupServer() {
     []() {
       String uri = server.uri();
 
-      Serial.print("Request fallback - URI: [");
+      Serial.print(
+        "Request fallback - URI: ["
+      );
+
       Serial.print(uri);
       Serial.println("]");
 
-      // Normalize a trailing slash so both /api/status and
-      // /api/status/ are treated identically.
       while (
         uri.length() > 1 &&
         uri.endsWith("/")
       ) {
-        uri.remove(uri.length() - 1);
+        uri.remove(
+          uri.length() - 1
+        );
       }
 
-      // Fallback router. This deliberately handles the API
-      // endpoints even if WebServer's registered-route matching
-      // does not match the incoming request on this ESP32 build.
       if (uri == "/api/status") {
         handleStatus();
         return;
@@ -1848,12 +2315,25 @@ void setupServer() {
         return;
       }
 
+      if (uri == "/api/mock/loop") {
+        handleMockLoop();
+        return;
+      }
+
+      if (uri == "/api/mock/loop/off") {
+        handleMockLoopOff();
+        return;
+      }
+
       if (uri == "/api/mock/off") {
         handleMockOff();
         return;
       }
 
-      Serial.print("404 - normalized URI: [");
+      Serial.print(
+        "404 - normalized URI: ["
+      );
+
       Serial.print(uri);
       Serial.println("]");
 
@@ -1880,7 +2360,7 @@ void setupServer() {
 // WIFI
 // ============================================================
 
-void connectWiFi() {
+bool connectWiFi() {
   WiFi.mode(
     WIFI_STA
   );
@@ -1898,15 +2378,29 @@ void connectWiFi() {
     WIFI_PASSWORD
   );
 
+  constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS =
+    15000;
+
+  unsigned long startedAt =
+    millis();
+
   while (
-    WiFi.status() !=
-    WL_CONNECTED
+    WiFi.status() != WL_CONNECTED &&
+    millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS
   ) {
     delay(500);
     Serial.print(".");
   }
 
   Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(
+      "ERROR: Wi-Fi connection failed."
+    );
+
+    return false;
+  }
 
   Serial.println(
     "Wi-Fi connected."
@@ -1919,16 +2413,15 @@ void connectWiFi() {
   Serial.println(
     WiFi.localIP()
   );
+
+  return true;
 }
 
 // ============================================================
 // TIME
 // ============================================================
 
-void setupTime() {
-  // United Kingdom:
-  // GMT in winter, BST in summer.
-
+bool setupTime() {
   setenv(
     "TZ",
     "GMT0BST,M3.5.0/1,M10.5.0/2",
@@ -1973,7 +2466,7 @@ void setupTime() {
       "WARNING: Time synchronisation failed. Continuing startup."
     );
 
-    return;
+    return false;
   }
 
   Serial.println(
@@ -1995,6 +2488,8 @@ void setupTime() {
       timeInfo.tm_sec
     );
   }
+
+  return true;
 }
 
 // ============================================================
@@ -2109,20 +2604,69 @@ void setup() {
 
   setupFastLED();
 
-  setupFutureHardware();
+  // Yellow = boot / initialization in progress.
+  showStartupYellow();
 
+  setupFutureHardware();
   setupLightning();
 
-  connectWiFi();
+  bool wifiOk =
+    connectWiFi();
 
-  setupTime();
+  bool timeOk = false;
+  bool weatherOk = false;
 
-  updateWeather();
+  if (wifiOk) {
+    timeOk =
+      setupTime();
+
+    if (timeOk) {
+      weatherOk =
+        updateWeather();
+    }
+  }
 
   lastWeatherUpdate =
     millis();
 
   setupServer();
+
+  if (
+    !wifiOk ||
+    !timeOk ||
+    !weatherOk
+  ) {
+    // Red = startup error. Keep the ring red until reboot,
+    // so the normal weather renderer cannot overwrite it.
+    startupError = true;
+    showStartupRed();
+
+    Serial.println(
+      "STARTUP ERROR - status light RED."
+    );
+
+    Serial.printf(
+      "Wi-Fi: %s | Time: %s | Weather API: %s\n",
+      wifiOk ? "OK" : "ERROR",
+      timeOk ? "OK" : "ERROR",
+      weatherOk ? "OK" : "ERROR"
+    );
+
+    lastLedUpdate =
+      millis();
+
+    return;
+  }
+
+  // Green = Wi-Fi connected, time/timezone ready and
+  // Open-Meteo successfully contacted.
+  showStartupGreen();
+
+  Serial.println(
+    "Startup checks complete - status light GREEN."
+  );
+
+  delay(1000);
 
   Serial.println(
     "Applying initial weather light..."
@@ -2160,45 +2704,48 @@ void setup() {
 void loop() {
   server.handleClient();
 
+  if (startupError) {
+    delay(100);
+    return;
+  }
+
   updateMockExpiration();
+  updateMockLoop();
 
-  // ----------------------------------------------------------
   // WEATHER
-  // ----------------------------------------------------------
-
   if (
     millis() -
     lastWeatherUpdate >=
     WEATHER_UPDATE_INTERVAL
   ) {
     if (updateWeather()) {
-      LedState newState =
-        calculateLedState();
+      if (!mockLoopState.blackout) {
+        LedState newState =
+          calculateLedState();
 
-      if (
-        ledOutputChanged(
-          ledState,
-          newState
-        )
-      ) {
-        applyLedState(
-          newState
-        );
+        if (
+          ledOutputChanged(
+            ledState,
+            newState
+          )
+        ) {
+          applyLedState(
+            newState
+          );
+        }
+
+        ledState =
+          newState;
       }
-
-      ledState =
-        newState;
     }
 
     lastWeatherUpdate =
       millis();
   }
 
-  // ----------------------------------------------------------
   // WEATHER RING
-  // ----------------------------------------------------------
-
   if (
+    !mockLoopState.blackout &&
     millis() -
     lastLedUpdate >=
     LED_RING_UPDATE_INTERVAL
@@ -2224,10 +2771,7 @@ void loop() {
       millis();
   }
 
-  // ----------------------------------------------------------
   // LIGHTNING
-  // ----------------------------------------------------------
-
   updateLightning();
 
   delay(5);

@@ -12,7 +12,9 @@
 // ============================================================
 
 constexpr int LED_RING_PIN = 18;
-constexpr int LED_RING_COUNT = 32;
+constexpr int LED_RING_COUNT = 35;
+constexpr bool ENABLE_RING_LIGHTNING = true;
+
 
 // 100 ms = maximum 10 FPS.
 // More than enough for very slow weather / solar fades.
@@ -59,6 +61,23 @@ constexpr int MISTER_PIN = 21;
 
 constexpr bool ENABLE_PUMP = false;
 constexpr bool ENABLE_MISTER = false;
+
+
+// ============================================================
+// AUTOMATIC MOCK LOOP
+// ============================================================
+
+// Each visual mock runs for 10 seconds.
+constexpr unsigned long MOCK_LOOP_STEP_MS =
+  10UL * 1000UL;
+
+// Ring completely off between two mock effects.
+constexpr unsigned long MOCK_LOOP_BLACKOUT_MS =
+  1000UL;
+
+// clear, mainly_clear, partly_cloudy, overcast, fog, drizzle,
+// rain, snow, thunderstorm, sunrise, sunset
+constexpr int MOCK_LOOP_COUNT = 11;
 
 
 // ============================================================

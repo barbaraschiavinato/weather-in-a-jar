@@ -1,145 +1,144 @@
 # Weather Jar
 
-A small ESP32-based ambient weather display that represents the current
-weather with a WS2812B LED ring.
+An ESP32-based ambient weather display that represents real weather
+conditions through a **WS2812B LED ring**, with automatic sunrise/sunset
+scenes, night mode, a local HTTP API, MQTT/Home Assistant integration,
+and an optional ESPHome touchscreen control panel.
 
-The current **working version is intentionally dry**: it uses only the
-addressable LED ring as the physical weather output. The firmware
-already provides weather interpretation, sunrise/sunset effects,
-forecasts, HTTP control, MQTT/Home Assistant integration, and support
-for the separate ESPHome touchscreen control panel.
-
-> **Future improvement:** a second "wet" version may add a water pump,
-> ultrasonic mist maker, and dedicated lightning LEDs. Those devices are
-> not part of the hardware described in this README.
+The current documented build is the **dry version**: it uses the LED
+ring only. A future "wet" version may add physical rain, mist and
+dedicated lightning LEDs.
 
 ------------------------------------------------------------------------
 
-## Current Architecture
+## Current System
 
 ``` text
-                    Open-Meteo
-                        │
-                        ▼
-                 ┌─────────────┐
-                 │ Weather Jar │
-                 │    ESP32    │
-                 └──────┬──────┘
-                        │
-              GPIO 18 ──┴──► WS2812B ring
-                        │
-             HTTP API + MQTT
-                  │           │
-                  ▼           ▼
-        ESPHome touch     Home Assistant
-            panel             / MQTT
+                     Open-Meteo
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │ Weather Jar │
+                  │    ESP32    │
+                  └──────┬──────┘
+                         │
+                 GPIO 18 │
+                         ▼
+                  WS2812B Ring
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+           HTTP API               MQTT
+              │                     │
+              ▼                     ▼
+      ESPHome Touch Panel     Home Assistant
 ```
 
-The Weather Jar is the source of truth for current weather and the
-five-day forecast. The touchscreen panel does **not** query Open-Meteo
-directly.
+The **Weather Jar ESP32 is the source of truth** for current weather and
+forecast data.
+
+The touchscreen does not contact Open-Meteo directly. It reads the Jar's
+local HTTP API.
 
 ------------------------------------------------------------------------
 
 # Hardware
 
-## Weather Jar --- current dry version
+## Weather Jar --- Dry Version
 
-### Required components
+### Components
 
--   **1× ESP32 development board**
--   **1× WS2812B RGB LED ring --- 35 LEDs**
--   **1× USB-C power source**
--   **1× USB-C power splitter**
--   **5 V / GND breakout or screw-terminal adapter** for powering the
-    LED ring independently
--   Jumper/hookup wires
+-   **1x ESP32 development board**
+-   **1x WS2812B RGB LED ring --- 35 LEDs**
+-   **1x suitable 5 V power supply**
+-   Hookup/jumper wires
 -   Glass jar / lantern or other enclosure
 
-### Power architecture
+No USB-C splitter is used in the current build.
 
-The ESP32 and LED ring are powered from separate branches of the same
-USB supply:
+## Power and Wiring
 
-``` text
-USB-C POWER
-    │
-    ▼
-USB-C SPLITTER
-    │
-    ├──► ESP32
-    │
-    └──► 5 V / GND breakout
-              │
-              └──► WS2812B ring
-```
+The power supply is connected directly to the ESP32 power screw
+terminals.
 
-The ring does not draw its main current through the ESP32.
-
-### WS2812B wiring
+The LED ring takes its 5 V and GND from the same power connection.
 
 ``` text
-ESP32 GPIO 18 ─────────────► WS2812 DIN
+5 V POWER SUPPLY
+      │
+      ├──────────────► ESP32 power terminal +5 V
+      │                         │
+      │                         └────────► WS2812B 5 V
+      │
+      └──────────────► ESP32 power terminal GND
+                                │
+                                └────────► WS2812B GND
 
-USB 5 V ───────────────────► WS2812 5 V
-USB GND ───────────────────► WS2812 GND
-ESP32 GND ─────────────────► common GND
+ESP32 GPIO 18 ───────────────────────────► WS2812B DIN
 ```
 
-  Component     Connection
-  ------------- ---------------------
+### Pin Mapping
+
+  Device        Connection
+  ------------- --------------------------
   WS2812B DIN   GPIO 18
-  WS2812B 5 V   External 5 V supply
-  WS2812B GND   Common ground
+  WS2812B 5 V   ESP32 5 V power terminal
+  WS2812B GND   ESP32/common GND
   LED count     35
 
-A common ground between the ESP32 and LED-ring supply is required for a
-reliable data signal.
+The ESP32 and ring therefore share the same supply and ground, while
+GPIO 18 carries only the WS2812B data signal.
 
 ------------------------------------------------------------------------
 
-# Optional Touchscreen Control Panel
+# Optional Touchscreen Panel
 
-The project also supports a separate ESPHome touchscreen controller.
+The Weather Jar can be controlled from a separate ESPHome touchscreen.
 
-Current hardware:
+Current panel hardware:
 
 -   **Guition / Sunton JC8048W550 / JC8048W550C_I**
 -   ESP32-S3
 -   5-inch 800×480 RGB display
 -   GT911 capacitive touchscreen
--   Wi-Fi connection to the same local network as the Weather Jar
+-   16 MB flash
+-   Octal PSRAM
+-   2.4 GHz Wi-Fi
 
-The panel communicates directly with the Jar over its HTTP API.
+The panel uses ESPHome with the ESP-IDF framework.
 
-It currently provides:
+## Panel Functions
 
--   live weather view
+The current UI provides:
+
+-   current live weather
+-   current temperature
+-   precipitation and rain
+-   location
 -   five-day forecast
+-   forecast min/max temperatures
 -   selectable forecast days
 -   weather mock controls
--   sunrise/sunset test controls
--   brightness controls
--   location display
--   loading/activity indicator
+-   sunrise and sunset test modes
+-   user brightness display
+-   brightness `+` / `-` controls
+-   loading/activity spinner
 
-The panel should use a **2.4 GHz Wi-Fi network**.
-
-## Panel data behaviour
+## LIVE vs TODAY
 
 ### LIVE
 
-The large weather card displays current observations from:
+`LIVE` displays the actual current state returned by:
 
 ``` http
 GET /api/status
 ```
 
-including:
+This includes:
 
 -   current weather
 -   current temperature
--   current period
+-   current day period
 -   precipitation
 -   rain
 -   location
@@ -147,33 +146,69 @@ including:
 
 ### TODAY
 
-`TODAY` is deliberately different from `LIVE`.
+`TODAY` represents the **forecast for today**, not the current
+observation.
 
-It represents today's **daily forecast**, not the current observation,
-and therefore displays:
+It uses forecast offset `0` and displays:
 
--   today's forecast weather
--   today's maximum temperature
--   today's minimum temperature
+-   forecast condition
+-   maximum temperature
+-   minimum temperature
 -   `TODAY • FORECAST`
 
-### Future days
+The following four cards display forecast days 1--4.
 
-The remaining forecast cards use the daily data returned by:
+------------------------------------------------------------------------
 
-``` http
-GET /api/forecast
+# ESPHome Configuration
+
+The panel YAML uses secrets instead of embedding local network
+information directly in the configuration.
+
+The current YAML expects:
+
+``` yaml
+# secrets.yaml
+
+wifi_ssid: "YOUR_2.4_GHZ_WIFI_SSID"
+wifi_password: "YOUR_WIFI_PASSWORD"
+
+weather_jar_ip: "192.168.1.xxx"
+
+weather_panel_api_key: "YOUR_ESPHOME_API_ENCRYPTION_KEY"
 ```
 
-Selecting one temporarily applies that forecast weather to the Jar for
-preview/testing and displays the selected day's min/max values in the
-large card.
+The panel configuration references them as:
+
+``` yaml
+substitutions:
+  jar_host: !secret weather_jar_ip
+
+api:
+  encryption:
+    key: !secret weather_panel_api_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+```
+
+OTA is enabled through ESPHome:
+
+``` yaml
+ota:
+  - platform: esphome
+```
+
+The current configuration does not require an OTA password secret.
+
+Do not commit a real `secrets.yaml` file to a public repository.
 
 ------------------------------------------------------------------------
 
 # Weather Source
 
-Weather data is retrieved directly by the Weather Jar from Open-Meteo.
+Weather information is retrieved by the Jar from **Open-Meteo**.
 
 Current observations include:
 
@@ -194,18 +229,19 @@ sunrise
 sunset
 ```
 
-The firmware requests five forecast days.
+The Jar keeps a **five-day forecast**.
 
-The weather request uses the latitude and longitude configured for the
-Jar.
+Latitude and longitude determine the weather location, while a
+human-readable location name is also exposed to clients such as the
+touchscreen.
 
 ------------------------------------------------------------------------
 
-# Weather States
+# Weather Representation
 
-Open-Meteo weather codes are mapped to these internal states:
+Open-Meteo weather codes are mapped to internal weather states:
 
-  Display         Internal value
+  Weather         Internal value
   --------------- -----------------
   Clear           `clear`
   Mainly clear    `mainly_clear`
@@ -217,9 +253,9 @@ Open-Meteo weather codes are mapped to these internal states:
   Snow            `snow`
   Thunderstorm    `thunderstorm`
 
-Each state controls the base colour and brightness of the LED ring.
+The selected state controls the LED-ring colour and effect brightness.
 
-Typical representation:
+Typical colours:
 
 -   Clear → warm white
 -   Mainly clear → warm cream
@@ -235,9 +271,9 @@ Typical representation:
 
 # Sunrise and Sunset
 
-The Jar also uses sunrise and sunset information returned by Open-Meteo.
+The Jar uses sunrise and sunset data from Open-Meteo.
 
-The day is divided into:
+The day is divided into four periods:
 
 ``` text
 night
@@ -246,24 +282,29 @@ day
 sunset
 ```
 
-The solar transition duration is controlled by:
+Solar transition duration is controlled by:
 
 ``` cpp
 SOLAR_EFFECT_HALF_WINDOW_SECONDS
 ```
 
-The full transition lasts:
+The complete transition lasts:
 
 ``` text
 SOLAR_EFFECT_HALF_WINDOW_SECONDS × 2
 ```
 
-For example, a value of 1800 seconds creates a one-hour transition
-centred on sunrise or sunset.
+For example:
 
-## Solar visibility
+``` cpp
+SOLAR_EFFECT_HALF_WINDOW_SECONDS = 1800;
+```
 
-The effect depends on cloud coverage.
+creates a one-hour transition centred on sunrise or sunset.
+
+## Solar Visibility
+
+The solar effect changes according to cloud coverage.
 
 ### Full
 
@@ -272,7 +313,7 @@ Used for:
 -   clear
 -   mainly clear
 
-The ring moves through the full sunrise/sunset colour sequence.
+The ring uses the complete sunrise/sunset colour sequence.
 
 ### Partial
 
@@ -280,7 +321,7 @@ Used for:
 
 -   partly cloudy
 
-Colours are softer and more muted.
+The solar colours are softer and more muted.
 
 ### None
 
@@ -293,21 +334,21 @@ Used for:
 -   snow
 -   thunderstorm
 
-The normal weather colour fades in/out rather than showing strong solar
-colours.
+Instead of showing strong sunrise/sunset colours, the normal weather
+colour fades in or out.
 
-## Night mode
+## Night Mode
 
-Outside the active sunrise/day/sunset periods, the ring is switched off.
+At night the LED ring is switched off.
 
 ------------------------------------------------------------------------
 
-# User Brightness
+# Brightness
 
-The project separates **user brightness** from the instantaneous
-brightness calculated by a weather effect.
+User brightness is independent from the instantaneous brightness
+generated by a weather effect.
 
-User brightness is expressed as:
+The user setting is:
 
 ``` text
 0–100 %
@@ -319,22 +360,23 @@ For example:
 "brightnessPercent": 60
 ```
 
-The effect engine can still report a different internal ring brightness.
-This is expected: `brightnessPercent` is the user-selected multiplier,
-while `ring.brightness` is the brightness currently calculated by the
-active effect.
+The status response may simultaneously contain:
 
-The touchscreen panel reads the user value directly from `/api/status`.
-
-Brightness can also be changed directly over HTTP:
-
-``` http
-GET /api/brightness?action=up
-GET /api/brightness?action=down
-GET /api/brightness?value=60
+``` json
+"ring": {
+  "brightness": 110,
+  "userBrightnessPercent": 60
+}
 ```
 
-The default increment/decrement step is 10%.
+This is expected:
+
+-   `brightnessPercent` / `userBrightnessPercent` = user-selected
+    brightness
+-   `ring.brightness` = instantaneous effect brightness
+
+The touchscreen reads and controls the user brightness directly through
+the Jar HTTP API.
 
 ------------------------------------------------------------------------
 
@@ -342,15 +384,15 @@ The default increment/decrement step is 10%.
 
 Once connected to Wi-Fi, the Jar exposes a local HTTP API.
 
-Example base address:
+Example:
 
 ``` text
-http://192.168.1.212
+http://192.168.1.xxx
 ```
 
-Use the actual IP assigned to your Jar.
+Use the actual IP address of the Jar.
 
-## Current status
+## Status
 
 ``` http
 GET /api/status
@@ -361,7 +403,7 @@ Example:
 ``` json
 {
   "wifi": "connected",
-  "ip": "192.168.1.212",
+  "ip": "192.168.1.xxx",
   "location": "London",
   "brightnessPercent": 60,
   "source": "real",
@@ -385,21 +427,17 @@ Example:
 }
 ```
 
-`source` is normally:
+`source` is normally `real` and becomes `mock` while a mock is active.
 
-``` text
-real
-```
-
-and becomes `mock` while a mock weather state is active.
-
-## Five-day forecast
+## Forecast
 
 ``` http
 GET /api/forecast
 ```
 
-Example structure:
+Returns five daily forecast entries.
+
+Example:
 
 ``` json
 {
@@ -419,7 +457,7 @@ Example structure:
 }
 ```
 
-`offset: 0` is TODAY.
+`offset: 0` represents TODAY.
 
 ## Configuration
 
@@ -427,24 +465,26 @@ Example structure:
 GET /api/config
 ```
 
-The configuration response includes the configured location and
-runtime/hardware settings.
+Returns the current runtime/hardware configuration and location
+information.
 
-## Brightness
+## Brightness API
 
 ``` http
 GET /api/brightness
 GET /api/brightness?action=up
 GET /api/brightness?action=down
-GET /api/brightness?value=100
+GET /api/brightness?value=60
 ```
+
+`up` and `down` change the user brightness in 10% steps.
 
 ------------------------------------------------------------------------
 
 # Mock API
 
-Mocks allow every visual state to be tested without waiting for matching
-real weather.
+The mock API allows visual states to be tested without waiting for
+matching real weather.
 
 ## Weather
 
@@ -460,7 +500,7 @@ GET /api/mock?weather=snow
 GET /api/mock?weather=thunderstorm
 ```
 
-## Day period
+## Day Period
 
 ``` http
 GET /api/mock?period=night
@@ -475,20 +515,20 @@ Weather and period can be combined:
 GET /api/mock?weather=clear&period=sunrise
 ```
 
-## Accelerated solar effects
+## Accelerated Sunrise/Sunset
 
 ``` http
 GET /api/mock?weather=clear&period=sunrise&speed=60
 GET /api/mock?weather=clear&period=sunset&speed=60
 ```
 
-## Temporary mocks
+## Temporary Mock
 
 ``` http
 GET /api/mock?weather=rain&duration=60
 ```
 
-## Return to real weather
+## Return to Live Weather
 
 ``` http
 GET /api/mock/off
@@ -498,13 +538,16 @@ GET /api/mock/off
 
 # MQTT and Home Assistant
 
-The Weather Jar connects to an MQTT broker and publishes Home Assistant
-MQTT Discovery configuration automatically.
+The Jar connects to an MQTT broker and uses **Home Assistant MQTT
+Discovery**.
 
-This allows Home Assistant to discover the Jar as a device rather than
-requiring every entity to be created manually.
+This allows Home Assistant to discover the Weather Jar and its controls
+automatically.
 
-## MQTT topics
+A typical Home Assistant OS installation can use the **Mosquitto broker
+add-on**.
+
+## MQTT Topics
 
 ### Mode
 
@@ -520,7 +563,7 @@ Command: weatherjar/set/brightness
 State:   weatherjar/state/brightness
 ```
 
-### Forecast override
+### Forecast Override
 
 ``` text
 Command: weatherjar/set/forecast
@@ -533,9 +576,11 @@ State:   weatherjar/state/forecast
 weatherjar/status/availability
 ```
 
-## Home Assistant MQTT Discovery
+------------------------------------------------------------------------
 
-The firmware publishes discovery configuration under:
+# Home Assistant MQTT Discovery
+
+The Jar publishes discovery configuration to:
 
 ``` text
 homeassistant/select/weatherjar_mode/config
@@ -543,27 +588,23 @@ homeassistant/number/weatherjar_brightness/config
 homeassistant/binary_sensor/weatherjar_online/config
 ```
 
-Home Assistant can therefore expose:
+The discovered device is:
 
--   **Mode** --- select entity
--   **Brightness** --- number/slider entity
+``` text
+Name:         Weather Jar
+Manufacturer: DIY
+Model:        ESP32 Weather Jar
+```
+
+Home Assistant exposes:
+
+-   **Mode** --- select
+-   **Brightness** --- number/slider
 -   **Online** --- connectivity binary sensor
 
-The discovered device is identified as:
+## Mode
 
-``` text
-Weather Jar
-```
-
-with model:
-
-``` text
-ESP32 Weather Jar
-```
-
-## Mode entity
-
-The MQTT mode selector supports:
+Available modes are:
 
 ``` text
 auto
@@ -582,11 +623,11 @@ loop
 off
 ```
 
-`auto` returns control to the real weather.
+`auto` returns the Jar to real weather.
 
-## Brightness entity
+## Brightness
 
-The Home Assistant brightness entity uses:
+The discovered brightness entity uses:
 
 ``` text
 minimum: 0
@@ -595,42 +636,56 @@ step: 10
 unit: %
 ```
 
-The Jar publishes its current brightness percentage to:
+Home Assistant publishes changes to:
+
+``` text
+weatherjar/set/brightness
+```
+
+and receives the current value from:
 
 ``` text
 weatherjar/state/brightness
 ```
 
-The touchscreen no longer needs Home Assistant to control brightness: it
-uses the Jar's HTTP API directly. Home Assistant and the touchscreen
-therefore act as two independent control surfaces for the same Jar
-state.
-
-## Home Assistant / Mosquitto setup
-
-A typical Home Assistant OS setup uses the Mosquitto broker add-on.
-
-High-level setup:
-
-1.  Install and start the **Mosquitto broker** add-on in Home Assistant.
-2.  Configure MQTT credentials for the Jar.
-3.  Put the broker address, port, username and password in the Jar's
-    private configuration/secrets.
-4.  Reboot or reconnect the Jar.
-5.  Confirm that the Jar connects to MQTT and publishes its discovery
-    messages.
-6.  Open Home Assistant's MQTT integration.
-7.  The **Weather Jar** device and its discovered entities should appear
-    automatically.
-
-Do not commit MQTT usernames/passwords or Wi-Fi credentials to a public
-repository.
+The touchscreen does **not** depend on this Home Assistant entity. It
+controls brightness directly through `/api/brightness`, so Home
+Assistant and the touchscreen are independent control surfaces for the
+same Jar.
 
 ------------------------------------------------------------------------
 
-# Configuration and Secrets
+# Home Assistant / Mosquitto Setup
 
-Typical Arduino project structure:
+Typical setup:
+
+1.  Install the **Mosquitto broker** add-on in Home Assistant.
+2.  Start the broker.
+3.  Configure the MQTT credentials used by the Weather Jar.
+4.  Configure the broker IP/hostname and port in the Jar's private
+    configuration.
+5.  Flash/restart the Jar.
+6.  Confirm that the Jar connects to the MQTT broker.
+7.  Confirm that the MQTT integration is enabled in Home Assistant.
+8.  The **Weather Jar** device and MQTT Discovery entities should appear
+    automatically.
+
+The firmware uses MQTT credentials/configuration such as:
+
+``` cpp
+MQTT_BROKER
+MQTT_PORT
+MQTT_USER
+MQTT_PASSWORD
+```
+
+Do not commit real MQTT credentials to a public repository.
+
+------------------------------------------------------------------------
+
+# Arduino Project Files
+
+Typical structure:
 
 ``` text
 mini_weather_central/
@@ -644,23 +699,25 @@ mini_weather_central/
 
 Main application containing:
 
--   Wi-Fi setup
+-   Wi-Fi connection
 -   NTP/time synchronisation
 -   Open-Meteo requests
--   current weather parsing
--   five-day forecast cache
+-   current-weather parsing
+-   five-day forecast
 -   weather mapping
--   LED calculations
+-   WS2812 effects
 -   sunrise/sunset effects
+-   night mode
 -   HTTP API
 -   mock system
+-   brightness control
 -   MQTT
 -   Home Assistant MQTT Discovery
 -   main loop
 
 ## `config.h`
 
-Contains hardware and behavioural configuration such as:
+Contains hardware and behavioural settings such as:
 
 ``` cpp
 LED_RING_PIN
@@ -674,13 +731,22 @@ LED_RING_UPDATE_INTERVAL
 SOLAR_EFFECT_HALF_WINDOW_SECONDS
 ```
 
-Settings for the future wet version may also exist in the
-firmware/configuration, but they are not required by the current dry
-hardware.
+The current dry build uses:
+
+``` text
+LED_RING_PIN   = GPIO 18
+LED_RING_COUNT = 35
+```
+
+The codebase may contain configuration for future hardware, but that
+hardware is not required for this build.
 
 ## `secrets.h`
 
-Contains private/local configuration such as:
+Private/local settings include Wi-Fi, location and MQTT connection
+details.
+
+Typical values include:
 
 ``` cpp
 WIFI_SSID
@@ -695,29 +761,15 @@ MQTT_USER
 MQTT_PASSWORD
 ```
 
-Keep this file private.
-
-## Location
-
-The firmware also exposes a human-readable location name, currently:
-
-``` text
-London
-```
-
-through `/api/status` and `/api/config`.
-
-Latitude and longitude are used for the actual Open-Meteo request. They
-do not need to identify an exact home address; approximate local
-coordinates are sufficient.
+Keep real credentials out of a public repository.
 
 ------------------------------------------------------------------------
 
-# Update Intervals
+# Update Behaviour
 
 There are two separate update layers.
 
-## Weather Jar → Open-Meteo
+## Jar → Open-Meteo
 
 The Jar refreshes weather according to:
 
@@ -725,26 +777,40 @@ The Jar refreshes weather according to:
 WEATHER_UPDATE_INTERVAL
 ```
 
-The current implementation retrieves current weather and the five-day
-daily forecast as part of its weather data update.
+The Jar stores the current weather and daily forecast locally.
 
-## Touchscreen → Weather Jar
+## Touchscreen → Jar
 
-The ESPHome panel currently polls:
+The ESPHome panel reads:
 
 ``` text
 /api/status    every 30 seconds
 /api/forecast  every 15 minutes
 ```
 
-The panel therefore refreshes its display independently of when the Jar
-last contacted Open-Meteo.
+At startup, the panel waits for the display and Wi-Fi to settle, then
+loads the data sequentially:
+
+``` text
+UI initialisation
+      ↓
+Wi-Fi connected
+      ↓
+/api/status
+      ↓
+/api/forecast
+      ↓
+normal periodic refresh
+```
+
+This avoids overlapping startup requests and reduces display instability
+during initial connection.
 
 ------------------------------------------------------------------------
 
 # Libraries
 
-Arduino/ESP32 firmware uses:
+The Arduino firmware uses:
 
 ``` text
 WiFi
@@ -756,8 +822,8 @@ time
 PubSubClient
 ```
 
-External libraries should be installed as required through Arduino
-Library Manager.
+External libraries should be installed through Arduino Library Manager
+where required.
 
 ------------------------------------------------------------------------
 
@@ -769,18 +835,18 @@ Recommended baud rate:
 115200
 ```
 
-Useful startup information includes:
+Useful startup diagnostics include:
 
 -   Wi-Fi connection
 -   assigned IP address
 -   NTP synchronisation
--   Open-Meteo fetch
--   parsed current weather
+-   Open-Meteo request
+-   current weather
 -   five-day forecast
--   HTTP server startup
--   MQTT broker connection
+-   HTTP server
+-   MQTT connection
 -   MQTT subscriptions
--   Home Assistant discovery publication
+-   Home Assistant Discovery
 
 ------------------------------------------------------------------------
 
@@ -790,46 +856,57 @@ Useful startup information includes:
 Open-Meteo
     │
     ▼
-ESP32 Weather Jar
+Weather Jar ESP32
     │
     ├── current weather
     ├── five-day forecast
     ├── sunrise / sunset
     ├── night mode
+    ├── WS2812B ring
     ├── user brightness
     ├── mock/test modes
     ├── HTTP API
     ├── MQTT
-    ├── Home Assistant discovery
-    └── WS2812B LED ring
+    └── Home Assistant Discovery
+          │
+          └── Home Assistant
 
-Local network
+Weather Jar HTTP API
     │
-    └── ESPHome touchscreen panel
+    └── ESPHome touchscreen
 ```
 
 ------------------------------------------------------------------------
 
 # Future Improvements
 
-The current documented build deliberately stops at the dry LED-ring
-version.
+The current documented hardware is intentionally limited to the dry
+LED-ring version.
 
 A future **wet version** may add:
 
--   water pump for physical rain
--   ultrasonic mist maker for fog/cloud effects
--   one or more dedicated lightning LEDs
--   precipitation intensity mapping to physical rain
--   intermittent mist based on weather conditions
+-   **1x Mini Submersible Water Pump (5V DC):** used to physically
+    simulate rain inside the jar.
+-   **1x Mini Ultrasonic Mist Maker (5V DC):** used to generate
+    atmospheric fog/mist based on real-time weather conditions.
+-   **2x Standard 5V LEDs (White/Cool White):** dedicated high-intensity
+    light sources used to simulate quick lightning flashes during
+    thunderstorms.
+
+These components could enable:
+
+-   physical rain simulation
+-   precipitation intensity mapping
+-   intermittent mist for cloud/fog conditions
+-   dedicated lightning flashes
 -   lightning frequency/intensity based on storm severity
 
 Other possible software improvements:
 
--   OTA firmware updates
+-   OTA workflow improvements
 -   persistent runtime configuration
 -   smoother transitions between changing weather states
--   additional Home Assistant entities/telemetry
+-   additional Home Assistant entities and telemetry
 
-These are roadmap items and are **not required for the current Weather
-Jar build**.
+The pump, mist maker and dedicated lightning LEDs are **future hardware
+and are not required for the current dry build**.

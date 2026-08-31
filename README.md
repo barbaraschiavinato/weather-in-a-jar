@@ -1,640 +1,454 @@
 # Weather Jar
 
-A small ESP32 weather display that represents the current weather using light, atmospheric effects, and optional physical effects such as mist, rain, and lightning.
+A small ESP32-based ambient weather display that represents the current
+weather with a WS2812B LED ring.
 
-The first working version focuses on the WS2812 LED ring, with support for sunrise/sunset transitions and an HTTP API for status, configuration, and testing.
+The current **working version is intentionally dry**: it uses only the
+addressable LED ring as the physical weather output. The firmware
+already provides weather interpretation, sunrise/sunset effects,
+forecasts, HTTP control, MQTT/Home Assistant integration, and support
+for the separate ESPHome touchscreen control panel.
 
-## Hardware Requirements
+> **Future improvement:** a second "wet" version may add a water pump,
+> ultrasonic mist maker, and dedicated lightning LEDs. Those devices are
+> not part of the hardware described in this README.
 
-Core Components
-* **1x ESP32 Quad MOS Board:** Development board based on the **ESP32-32E** microcontroller, featuring 4 integrated N-channel MOSFET channels. Ideal for controlling DC loads up to 60V silently, without the clicking noise of mechanical relays.
-* **1x WS2812B RGB LED Ring (35 LEDs):** 5V addressable LED ring used to simulate weather colors, sunrises, and sunsets.
-* **1x Mini Submersible Water Pump (5V DC):** Used to physically simulate rain inside the jar.
-* **1x Mini Ultrasonic Mist Maker (5V DC):** Used to generate atmospheric fog/mist based on real-time weather conditions.
-* **2x Standard 5V LEDs (White/Cool White):** Dedicated high-intensity light sources used to simulate quick lightning flashes during thunderstorms.
+------------------------------------------------------------------------
 
-### Power Supply & Wiring (Solderless Setup)
-* **1x Raspberry Pi 5 USB-C Power Adapter (27W - 5.1V / 5A):** Required to deliver the high current (approx. 3.5A peak) needed when the LED ring (at full white brightness), the water pump, and the mist maker run simultaneously.
-* **1x USB-C Female to 5-Pin Screw Terminal Adapter:** Essential to securely connect the Raspberry Pi 5 power supply without cutting its original cable. The 5-pin version includes built-in 5.1kΩ pull-down resistors required to trigger power delivery from smart USB-PD power bricks.
-* **Jumper / Hookup Wires:** Standard electrical wire (AWG22 or AWG24 recommended for main power lines) to link the screw terminals together.
-* **1x Glass Jar or Lantern:** The enclosure housing the electronics and containing the physical atmospheric effects.
+## Current Architecture
 
-Pin Mapping (Optimized for ESP32 Quad MOS)
-When using the ESP32 Quad MOS board, modify the pin definitions in the `config.h` file as follows to match the onboard hardwired MOSFETs and prevent hardware conflicts:
-
-| Component | ESP32 GPIO Pin | Physical Connection on the Board |
-| :--- | :---: | :--- |
-| **RGB LED Ring (Data In)** | `GPIO 13` | Free GPIO 13 Pin Header (Power bypassed directly to power source) |
-| **Mini Water Pump** | `GPIO 16` | **OUT1** Screw Terminal (MOSFET 1) |
-| **Mini Mist Maker** | `GPIO 17` | **OUT2** Screw Terminal (MOSFET 2) |
-| **Lightning LEDs (x2)** | `GPIO 18` | **OUT3** Screw Terminal (MOSFET 3 - Wired in parallel) |
-
-
-## Features
-
-- ESP32 based
-- Weather data from Open-Meteo
-- Automatic Wi-Fi connection
-- Automatic time synchronisation via NTP
-- UK timezone with automatic GMT/BST handling
-- WS2812B LED ring
-- Weather-dependent LED colours
-- Weather-dependent brightness
-- Sunrise animation
-- Sunset animation
-- Different solar effects depending on cloud coverage
-- Night mode
-- Optional dedicated lightning LEDs (up to two)
-- Mock API for testing weather conditions
-- Accelerated sunrise/sunset simulation
-- HTTP status endpoint
-- HTTP configuration endpoint
-- Future support for:
-  - water pump
-  - mist maker
-
----
-
-## Weather Representation
-
-The current weather is converted from the Open-Meteo weather code into one of the following internal states:
-
-| Weather | Internal value |
-|---|---|
-| Clear | `clear` |
-| Mainly clear | `mainly_clear` |
-| Partly cloudy | `partly_cloudy` |
-| Overcast | `overcast` |
-| Fog | `fog` |
-| Drizzle | `drizzle` |
-| Rain | `rain` |
-| Snow | `snow` |
-| Thunderstorm | `thunderstorm` |
-
-The weather controls the base colour and brightness of the LED ring.
-
-Examples:
-
-- Clear → warm white
-- Mainly clear → warm cream
-- Partly cloudy → neutral warm white
-- Overcast → grey
-- Fog → pale grey
-- Drizzle → light blue
-- Rain → blue
-- Snow → cold white/blue
-- Thunderstorm → dark blue
-
----
-
-## Sunrise and Sunset
-
-The Weather Jar also uses sunrise and sunset information returned by Open-Meteo.
-
-The day is divided into four periods:
-
-- `night`
-- `sunrise`
-- `day`
-- `sunset`
-
-The duration of the sunrise and sunset effect is controlled by:
-
-```cpp
-SOLAR_EFFECT_HALF_WINDOW_SECONDS
+``` text
+                    Open-Meteo
+                        │
+                        ▼
+                 ┌─────────────┐
+                 │ Weather Jar │
+                 │    ESP32    │
+                 └──────┬──────┘
+                        │
+              GPIO 18 ──┴──► WS2812B ring
+                        │
+             HTTP API + MQTT
+                  │           │
+                  ▼           ▼
+        ESPHome touch     Home Assistant
+            panel             / MQTT
 ```
 
-The complete effect duration is:
+The Weather Jar is the source of truth for current weather and the
+five-day forecast. The touchscreen panel does **not** query Open-Meteo
+directly.
 
-```text
-SOLAR_EFFECT_HALF_WINDOW_SECONDS × 2
-```
+------------------------------------------------------------------------
 
-For example, with:
+# Hardware
 
-```cpp
-SOLAR_EFFECT_HALF_WINDOW_SECONDS = 1800;
-```
+## Weather Jar --- current dry version
 
-the transition lasts one hour:
+### Required components
 
-```text
-30 minutes before sunrise
-        ↓
-      sunrise
-        ↓
-30 minutes after sunrise
-```
+-   **1× ESP32 development board**
+-   **1× WS2812B RGB LED ring --- 35 LEDs**
+-   **1× USB-C power source**
+-   **1× USB-C power splitter**
+-   **5 V / GND breakout or screw-terminal adapter** for powering the
+    LED ring independently
+-   Jumper/hookup wires
+-   Glass jar / lantern or other enclosure
 
-The same behaviour applies to sunset.
+### Power architecture
 
----
+The ESP32 and LED ring are powered from separate branches of the same
+USB supply:
 
-## Solar Visibility
-
-Sunrise and sunset behaviour also depends on the current weather.
-
-### Full visibility
-
-Used for:
-
-- clear
-- mainly clear
-
-The LED ring moves through a full sunrise/sunset colour sequence.
-
-Example sunrise:
-
-```text
-OFF
-↓
-deep red
-↓
-red
-↓
-orange
-↓
-amber
-↓
-warm white
-↓
-current weather colour
-```
-
-Sunset performs the reverse transition.
-
-### Partial visibility
-
-Used for:
-
-- partly cloudy
-
-The sunrise/sunset colours are softer and more muted.
-
-### No visibility
-
-Used for:
-
-- overcast
-- fog
-- drizzle
-- rain
-- snow
-- thunderstorm
-
-Instead of displaying strong sunrise colours, the normal weather colour simply fades in or fades out.
-
-This means, for example, that a rainy sunrise does not suddenly turn the jar orange.
-
----
-
-## Night Mode
-
-Outside the sunrise/day/sunset periods, the LED ring is switched off.
-
-```text
-brightness = 0
-RGB = 0, 0, 0
-```
-
----
-
-## Lightning
-
-When the effective weather state is:
-
-```text
-thunderstorm
-```
-
-the optional lightning system can generate random flashes.
-
-The first lightning LED is the primary flash source. A second optional LED can be enabled to reproduce the same flash with a configurable delay, creating a more natural sense of propagation through the jar.
-
-A lightning event can contain multiple flashes with random:
-
-- intensity
-- flash duration
-- delay between flashes
-- delay between lightning events
-
-The second LED:
-
-- can be enabled or disabled independently
-- uses a separate GPIO pin
-- mirrors the brightness and duration of the first LED
-- can be delayed relative to the first LED
-- is controlled without blocking the main loop
-
-Typical configuration:
-
-```cpp
-LIGHTNING_LED_PIN
-LIGHTNING_LED_2_PIN
-
-ENABLE_LIGHTNING_LED
-ENABLE_LIGHTNING_LED_2
-
-LIGHTNING_LED_2_DELAY_MS
-```
-
-For example:
-
-```cpp
-constexpr bool ENABLE_LIGHTNING_LED_2 = true;
-constexpr unsigned long LIGHTNING_LED_2_DELAY_MS = 35;
-```
-
-With a delay of `0`, both LEDs flash together.
-
-With a small delay such as `20-60 ms`, the second LED appears slightly after the first and can make the lightning effect feel more spatial.
-
-The lightning mock uses the same lightning engine as real thunderstorm weather, so the second LED and its delay can be tested through the HTTP API.
-
----
-
-## Hardware
-
-Current / planned components:
-
-- ESP32
-- WS2812B LED ring
-- up to two optional dedicated lightning LEDs
-- mini submersible water pump
-- ultrasonic mist maker
-- external power supply as required
-
-The LED ring is currently the primary output device.
-
-The pump and mist maker are represented in the configuration and hardware setup but their weather behaviour can be implemented independently.
-
----
-
-## Power and Wiring Architecture
-
-The Weather Jar uses a single USB-C power source split into three branches.
-
-```text
-USB-C POWER SPLITTER
-│
-├── USB-C #1 → ESP32
-│
-├── USB-C #2 → 5V/GND adapter
-│               └── WS2812 ring
-│
-└── USB-C #3 → 5V/GND adapter
-                └── MOSFET BOARD
-                    ├── CH1 → lightning LED 1
-                    ├── CH2 → pump
-                    ├── CH3 → mister
-                    └── CH4 → lightning LED 2
-```
-
-### ESP32 GPIO connections
-
-```text
-ESP32
-│
-├── GPIO 18  LED_RING_PIN
-│      └──────────────→ DIN of the WS2812 ring
-│
-├── GPIO 23  LIGHTNING_LED_PIN
-│      └──────────────→ CH1 MOSFET
-│
-├── GPIO 19  PUMP_PIN
-│      └──────────────→ CH2 MOSFET
-│
-├── GPIO 21  MISTER_PIN
-│      └──────────────→ CH3 MOSFET
-│
-└── GPIO 22  LIGHTNING_LED_2_PIN
-       └──────────────→ CH4 MOSFET
-```
-
-### MOSFET channels
-
-| Channel | Device | ESP32 control |
-|---|---|---|
-| CH1 | Lightning LED 1 | GPIO 23 |
-| CH2 | Water pump | GPIO 19 |
-| CH3 | Mist maker | GPIO 21 |
-| CH4 | Lightning LED 2 | GPIO 22 |
-
-The second lightning LED is optional in software and is controlled independently through `LIGHTNING_LED_2_PIN`. Its flash can be delayed relative to the first LED using `LIGHTNING_LED_2_DELAY_MS`.
-
-### WS2812 ring
-
-The WS2812 ring is powered independently from USB-C #2:
-
-```text
-USB-C #2
+``` text
+USB-C POWER
     │
-    └── 5V/GND adapter
-            │
-            ├── 5V  → WS2812 5V
-            └── GND → WS2812 GND
-
-ESP32 GPIO 18 ─────→ WS2812 DIN
-```
-
-The ring therefore does not draw its main power through the ESP32. The ESP32 only provides the data signal on `GPIO 18`.
-
-### Lightning LEDs
-
-Both lightning LEDs are powered through the MOSFET board:
-
-```text
-USB-C #3
+    ▼
+USB-C SPLITTER
     │
-    └── 5V/GND adapter
-            │
-            └── MOSFET BOARD
-                  │
-                  ├── CH1 → lightning LED 1
-                  │          ↑
-                  │       GPIO 23
-                  │
-                  └── CH4 → lightning LED 2
-                             ↑
-                          GPIO 22
+    ├──► ESP32
+    │
+    └──► 5 V / GND breakout
+              │
+              └──► WS2812B ring
 ```
 
-LED 1 is the primary lightning output. LED 2 is optional and mirrors each flash with the configured delay.
+The ring does not draw its main current through the ESP32.
 
----
+### WS2812B wiring
 
-## Files
+``` text
+ESP32 GPIO 18 ─────────────► WS2812 DIN
 
-Typical project structure:
-
-```text
-mini_weather_central/
-├── mini_weather_central.ino
-├── config.h
-├── secrets.h
-└── types.h
+USB 5 V ───────────────────► WS2812 5 V
+USB GND ───────────────────► WS2812 GND
+ESP32 GND ─────────────────► common GND
 ```
 
-### `mini_weather_central.ino`
+  Component     Connection
+  ------------- ---------------------
+  WS2812B DIN   GPIO 18
+  WS2812B 5 V   External 5 V supply
+  WS2812B GND   Common ground
+  LED count     35
 
-Main application.
+A common ground between the ESP32 and LED-ring supply is required for a
+reliable data signal.
 
-Contains:
+------------------------------------------------------------------------
 
-- Wi-Fi setup
-- time synchronisation
-- Open-Meteo requests
-- weather mapping
-- LED calculations
-- sunrise/sunset effects
-- lightning logic
-- HTTP API
-- mock system
-- main loop
+# Optional Touchscreen Control Panel
 
-### `config.h`
+The project also supports a separate ESPHome touchscreen controller.
 
-Contains hardware and behaviour configuration such as:
+Current hardware:
 
-```cpp
-LED_RING_PIN
-LED_RING_COUNT
+-   **Guition / Sunton JC8048W550 / JC8048W550C_I**
+-   ESP32-S3
+-   5-inch 800×480 RGB display
+-   GT911 capacitive touchscreen
+-   Wi-Fi connection to the same local network as the Weather Jar
 
-PUMP_PIN
-MISTER_PIN
-LIGHTNING_LED_PIN
-LIGHTNING_LED_2_PIN
+The panel communicates directly with the Jar over its HTTP API.
 
-ENABLE_WEATHER_LIGHT
-ENABLE_SOLAR_EFFECTS
-ENABLE_LIGHTNING_LED
-ENABLE_LIGHTNING_LED_2
-ENABLE_PUMP
-ENABLE_MISTER
+It currently provides:
 
-LIGHTNING_LED_2_DELAY_MS
+-   live weather view
+-   five-day forecast
+-   selectable forecast days
+-   weather mock controls
+-   sunrise/sunset test controls
+-   brightness controls
+-   location display
+-   loading/activity indicator
 
-WEATHER_UPDATE_INTERVAL
-LED_RING_UPDATE_INTERVAL
+The panel should use a **2.4 GHz Wi-Fi network**.
 
-SOLAR_EFFECT_HALF_WINDOW_SECONDS
+## Panel data behaviour
+
+### LIVE
+
+The large weather card displays current observations from:
+
+``` http
+GET /api/status
 ```
 
-It also contains weather brightness values and lightning timing configuration.
+including:
 
-### `secrets.h`
+-   current weather
+-   current temperature
+-   current period
+-   precipitation
+-   rain
+-   location
+-   user brightness
 
-Contains private/local configuration such as Wi-Fi credentials and the location used for weather data.
+### TODAY
 
-Example:
+`TODAY` is deliberately different from `LIVE`.
 
-```cpp
-#pragma once
+It represents today's **daily forecast**, not the current observation,
+and therefore displays:
 
-const char* WIFI_SSID = "YOUR_WIFI";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+-   today's forecast weather
+-   today's maximum temperature
+-   today's minimum temperature
+-   `TODAY • FORECAST`
 
-// Location
-constexpr float LATITUDE = 51.51147;
-constexpr float LONGITUDE = -0.13078308;
+### Future days
+
+The remaining forecast cards use the daily data returned by:
+
+``` http
+GET /api/forecast
 ```
 
-### Finding latitude and longitude
+Selecting one temporarily applies that forecast weather to the Jar for
+preview/testing and displays the selected day's min/max values in the
+large card.
 
-The coordinates should identify the location for which the Weather Jar retrieves weather information.
+------------------------------------------------------------------------
 
-An easy way to find them is with Google Maps:
+# Weather Source
 
-1. Open Google Maps.
-2. Find the location you want the Weather Jar to represent.
-3. Right-click the exact point on the map.
-4. The latitude and longitude appear at the top of the context menu.
-5. Click the coordinates to copy them.
-6. Put the first value in `LATITUDE` and the second value in `LONGITUDE`.
+Weather data is retrieved directly by the Weather Jar from Open-Meteo.
 
-For example, coordinates shown as:
+Current observations include:
 
-```text
-51.51147, -0.13078308
-```
-
-become:
-
-```cpp
-constexpr float LATITUDE = 51.51147;
-constexpr float LONGITUDE = -0.13078308;
-```
-
-Latitude is always the first value and longitude is the second.
-
-Negative values are significant and must be preserved. For example, locations west of the Greenwich meridian normally have a negative longitude.
-
-The coordinates do not need to identify your exact home address. Coordinates for your town, neighbourhood, or another nearby representative point are normally sufficient for the Weather Jar.
-
-Do not commit real Wi-Fi credentials to a public repository. If the repository is public and you consider your precise location private, use approximate coordinates or keep the location values out of the committed file as well.
-
-### `types.h`
-
-Contains the shared enums and state structures:
-
-```text
-WeatherType
-DayPeriod
-SunVisibility
-RgbColor
-WeatherState
-MockState
-LedState
-LightningState
-```
-
----
-
-## Weather Source
-
-Weather data is retrieved from Open-Meteo.
-
-The application requests:
-
-```text
+``` text
 temperature_2m
 weather_code
 precipitation
 rain
+```
+
+Daily data includes:
+
+``` text
+weather_code
+temperature_2m_max
+temperature_2m_min
 sunrise
 sunset
 ```
 
-The request uses the latitude and longitude configured in `config.h`.
+The firmware requests five forecast days.
 
----
+The weather request uses the latitude and longitude configured for the
+Jar.
 
-## HTTP API
+------------------------------------------------------------------------
 
-Once the ESP32 connects to Wi-Fi, its IP address is printed to the Serial Monitor.
+# Weather States
 
-Example:
+Open-Meteo weather codes are mapped to these internal states:
 
-```text
-IP address: 192.168.1.123
+  Display         Internal value
+  --------------- -----------------
+  Clear           `clear`
+  Mainly clear    `mainly_clear`
+  Partly cloudy   `partly_cloudy`
+  Overcast        `overcast`
+  Fog             `fog`
+  Drizzle         `drizzle`
+  Rain            `rain`
+  Snow            `snow`
+  Thunderstorm    `thunderstorm`
+
+Each state controls the base colour and brightness of the LED ring.
+
+Typical representation:
+
+-   Clear → warm white
+-   Mainly clear → warm cream
+-   Partly cloudy → neutral warm white
+-   Overcast → grey
+-   Fog → pale grey
+-   Drizzle → light blue
+-   Rain → blue
+-   Snow → cold white/blue
+-   Thunderstorm → dark blue
+
+------------------------------------------------------------------------
+
+# Sunrise and Sunset
+
+The Jar also uses sunrise and sunset information returned by Open-Meteo.
+
+The day is divided into:
+
+``` text
+night
+sunrise
+day
+sunset
 ```
 
-The API is then available at:
+The solar transition duration is controlled by:
 
-```text
-http://192.168.1.123/
+``` cpp
+SOLAR_EFFECT_HALF_WINDOW_SECONDS
 ```
 
----
+The full transition lasts:
 
-## Status
+``` text
+SOLAR_EFFECT_HALF_WINDOW_SECONDS × 2
+```
 
-```http
+For example, a value of 1800 seconds creates a one-hour transition
+centred on sunrise or sunset.
+
+## Solar visibility
+
+The effect depends on cloud coverage.
+
+### Full
+
+Used for:
+
+-   clear
+-   mainly clear
+
+The ring moves through the full sunrise/sunset colour sequence.
+
+### Partial
+
+Used for:
+
+-   partly cloudy
+
+Colours are softer and more muted.
+
+### None
+
+Used for:
+
+-   overcast
+-   fog
+-   drizzle
+-   rain
+-   snow
+-   thunderstorm
+
+The normal weather colour fades in/out rather than showing strong solar
+colours.
+
+## Night mode
+
+Outside the active sunrise/day/sunset periods, the ring is switched off.
+
+------------------------------------------------------------------------
+
+# User Brightness
+
+The project separates **user brightness** from the instantaneous
+brightness calculated by a weather effect.
+
+User brightness is expressed as:
+
+``` text
+0–100 %
+```
+
+For example:
+
+``` json
+"brightnessPercent": 60
+```
+
+The effect engine can still report a different internal ring brightness.
+This is expected: `brightnessPercent` is the user-selected multiplier,
+while `ring.brightness` is the brightness currently calculated by the
+active effect.
+
+The touchscreen panel reads the user value directly from `/api/status`.
+
+Brightness can also be changed directly over HTTP:
+
+``` http
+GET /api/brightness?action=up
+GET /api/brightness?action=down
+GET /api/brightness?value=60
+```
+
+The default increment/decrement step is 10%.
+
+------------------------------------------------------------------------
+
+# HTTP API
+
+Once connected to Wi-Fi, the Jar exposes a local HTTP API.
+
+Example base address:
+
+``` text
+http://192.168.1.212
+```
+
+Use the actual IP assigned to your Jar.
+
+## Current status
+
+``` http
 GET /api/status
 ```
 
-Returns the current effective state.
-
 Example:
 
-```json
+``` json
 {
   "wifi": "connected",
-  "ip": "192.168.1.123",
+  "ip": "192.168.1.212",
+  "location": "London",
+  "brightnessPercent": 60,
   "source": "real",
-  "weather": "partly_cloudy",
+  "weather": "overcast",
   "period": "day",
-  "sunVisibility": "partial",
-  "temperature": 23.7,
-  "weatherCode": 2,
+  "sunVisibility": "none",
+  "temperature": 21.6,
+  "weatherCode": 3,
   "precipitation": 0,
   "rain": 0,
   "ring": {
     "enabled": true,
-    "effect": "partly_cloudy",
+    "effect": "overcast",
     "progress": 0,
-    "brightness": 180,
-    "r": 220,
-    "g": 220,
-    "b": 205
-  },
-  "lightning": {
-    "enabled": true,
-    "active": false,
-    "brightness": 0,
-    "led2Enabled": true,
-    "led2DelayMs": 35,
-    "brightness2": 0
+    "brightness": 110,
+    "userBrightnessPercent": 60,
+    "r": 95,
+    "g": 110,
+    "b": 125
   }
 }
 ```
 
-`source` can be:
+`source` is normally:
 
-```text
+``` text
 real
-mock
 ```
 
-The `lightning` object also exposes the runtime state of the optional second lightning LED:
+and becomes `mock` while a mock weather state is active.
 
-- `led2Enabled` — whether the second LED is enabled
-- `led2DelayMs` — configured delay relative to the first LED
-- `brightness2` — current output brightness of the second LED
+## Five-day forecast
 
----
+``` http
+GET /api/forecast
+```
+
+Example structure:
+
+``` json
+{
+  "valid": true,
+  "count": 5,
+  "days": [
+    {
+      "offset": 0,
+      "date": "2026-08-31",
+      "valid": true,
+      "weather": "drizzle",
+      "weatherCode": 53,
+      "temperatureMax": 21.6,
+      "temperatureMin": 14.9
+    }
+  ]
+}
+```
+
+`offset: 0` is TODAY.
 
 ## Configuration
 
-```http
+``` http
 GET /api/config
 ```
 
-Returns the hardware and runtime configuration currently used by the device.
+The configuration response includes the configured location and
+runtime/hardware settings.
 
-Example:
+## Brightness
 
-```json
-{
-  "latitude": 51.51147,
-  "longitude": -0.130783,
-  "weatherUpdateSeconds": 900,
-  "solarEffectWindowMinutes": 60,
-  "ring": {
-    "enabled": true,
-    "pin": 5,
-    "count": 32,
-    "updateIntervalMs": 100
-  },
-  "lightning": {
-    "enabled": true,
-    "pin": 6,
-    "led2Enabled": true,
-    "led2Pin": 22,
-    "led2DelayMs": 35
-  },
-  "pump": {
-    "enabled": false,
-    "pin": 7
-  },
-  "mister": {
-    "enabled": false,
-    "pin": 8
-  }
-}
+``` http
+GET /api/brightness
+GET /api/brightness?action=up
+GET /api/brightness?action=down
+GET /api/brightness?value=100
 ```
 
-Values depend on `config.h`.
+------------------------------------------------------------------------
 
----
+# Mock API
 
-## Mock API
+Mocks allow every visual state to be tested without waiting for matching
+real weather.
 
-The mock API allows the Weather Jar to be tested without waiting for real weather conditions.
+## Weather
 
-### Mock weather
-
-```http
+``` http
 GET /api/mock?weather=clear
 GET /api/mock?weather=mainly_clear
 GET /api/mock?weather=partly_cloudy
@@ -646,299 +460,376 @@ GET /api/mock?weather=snow
 GET /api/mock?weather=thunderstorm
 ```
 
-When thunderstorm mode is enabled, lightning starts using the normal lightning engine. If the second lightning LED is enabled, it follows the first LED using the configured delay.
+## Day period
 
-Example:
-
-```http
-GET /api/mock?weather=rain
-```
-
-The device continues using the real time period but displays rain.
-
----
-
-## Mock Day Period
-
-A time period can also be forced:
-
-```http
+``` http
 GET /api/mock?period=night
 GET /api/mock?period=sunrise
 GET /api/mock?period=day
 GET /api/mock?period=sunset
 ```
 
-Example:
+Weather and period can be combined:
 
-```http
-GET /api/mock?period=sunset
-```
-
----
-
-## Combined Mocks
-
-Weather and day period can be combined.
-
-Examples:
-
-```http
+``` http
 GET /api/mock?weather=clear&period=sunrise
 ```
 
-```http
-GET /api/mock?weather=partly_cloudy&period=sunset
-```
+## Accelerated solar effects
 
-```http
-GET /api/mock?weather=rain&period=sunrise
-```
-
-This is particularly useful for checking how cloud coverage changes the solar effects.
-
----
-
-## Accelerated Sunrise / Sunset
-
-Normally the solar animation follows real time.
-
-For testing, the animation can be accelerated using:
-
-```text
-speed
-```
-
-Example:
-
-```http
+``` http
 GET /api/mock?weather=clear&period=sunrise&speed=60
-```
-
-A normal one-hour animation will therefore complete approximately 60× faster.
-
-Other examples:
-
-```http
 GET /api/mock?weather=clear&period=sunset&speed=60
 ```
 
-```http
-GET /api/mock?weather=partly_cloudy&period=sunrise&speed=120
+## Temporary mocks
+
+``` http
+GET /api/mock?weather=rain&duration=60
 ```
 
----
+## Return to real weather
 
-## Temporary Mocks
-
-A mock can automatically expire using:
-
-```text
-duration
-```
-
-The value is expressed in seconds.
-
-Example:
-
-```http
-GET /api/mock?weather=thunderstorm&duration=60
-```
-
-The Weather Jar will simulate a thunderstorm for 60 seconds and then automatically return to real weather.
-
----
-
-## Disable Mock Mode
-
-```http
+``` http
 GET /api/mock/off
 ```
 
-This immediately restores:
+------------------------------------------------------------------------
 
-- real weather
-- real day period
-- normal sunrise/sunset timing
+# MQTT and Home Assistant
 
----
+The Weather Jar connects to an MQTT broker and publishes Home Assistant
+MQTT Discovery configuration automatically.
 
-## Useful Test URLs
+This allows Home Assistant to discover the Jar as a device rather than
+requiring every entity to be created manually.
 
-Assuming the ESP32 address is:
+## MQTT topics
 
-```text
-192.168.1.123
+### Mode
+
+``` text
+Command: weatherjar/set/mode
+State:   weatherjar/state/mode
 ```
 
-### Current status
+### Brightness
 
-```text
-http://192.168.1.123/api/status
+``` text
+Command: weatherjar/set/brightness
+State:   weatherjar/state/brightness
 ```
 
-### Configuration
+### Forecast override
 
-```text
-http://192.168.1.123/api/config
+``` text
+Command: weatherjar/set/forecast
+State:   weatherjar/state/forecast
 ```
 
-### Clear sky
+### Availability
 
-```text
-http://192.168.1.123/api/mock?weather=clear
+``` text
+weatherjar/status/availability
 ```
 
-### Rain
+## Home Assistant MQTT Discovery
 
-```text
-http://192.168.1.123/api/mock?weather=rain
+The firmware publishes discovery configuration under:
+
+``` text
+homeassistant/select/weatherjar_mode/config
+homeassistant/number/weatherjar_brightness/config
+homeassistant/binary_sensor/weatherjar_online/config
 ```
 
-### Thunderstorm
+Home Assistant can therefore expose:
 
-```text
-http://192.168.1.123/api/mock?weather=thunderstorm
+-   **Mode** --- select entity
+-   **Brightness** --- number/slider entity
+-   **Online** --- connectivity binary sensor
+
+The discovered device is identified as:
+
+``` text
+Weather Jar
 ```
 
-### Fast clear sunrise
+with model:
 
-```text
-http://192.168.1.123/api/mock?weather=clear&period=sunrise&speed=60
+``` text
+ESP32 Weather Jar
 ```
 
-### Fast clear sunset
+## Mode entity
 
-```text
-http://192.168.1.123/api/mock?weather=clear&period=sunset&speed=60
+The MQTT mode selector supports:
+
+``` text
+auto
+clear
+mainly_clear
+partly_cloudy
+overcast
+fog
+drizzle
+rain
+snow
+storm
+sunrise
+sunset
+loop
+off
 ```
 
-### Fast partly cloudy sunrise
+`auto` returns control to the real weather.
 
-```text
-http://192.168.1.123/api/mock?weather=partly_cloudy&period=sunrise&speed=60
+## Brightness entity
+
+The Home Assistant brightness entity uses:
+
+``` text
+minimum: 0
+maximum: 100
+step: 10
+unit: %
 ```
 
-### Rainy sunrise
+The Jar publishes its current brightness percentage to:
 
-```text
-http://192.168.1.123/api/mock?weather=rain&period=sunrise&speed=60
+``` text
+weatherjar/state/brightness
 ```
 
-### Restore real mode
+The touchscreen no longer needs Home Assistant to control brightness: it
+uses the Jar's HTTP API directly. Home Assistant and the touchscreen
+therefore act as two independent control surfaces for the same Jar
+state.
 
-```text
-http://192.168.1.123/api/mock/off
+## Home Assistant / Mosquitto setup
+
+A typical Home Assistant OS setup uses the Mosquitto broker add-on.
+
+High-level setup:
+
+1.  Install and start the **Mosquitto broker** add-on in Home Assistant.
+2.  Configure MQTT credentials for the Jar.
+3.  Put the broker address, port, username and password in the Jar's
+    private configuration/secrets.
+4.  Reboot or reconnect the Jar.
+5.  Confirm that the Jar connects to MQTT and publishes its discovery
+    messages.
+6.  Open Home Assistant's MQTT integration.
+7.  The **Weather Jar** device and its discovered entities should appear
+    automatically.
+
+Do not commit MQTT usernames/passwords or Wi-Fi credentials to a public
+repository.
+
+------------------------------------------------------------------------
+
+# Configuration and Secrets
+
+Typical Arduino project structure:
+
+``` text
+mini_weather_central/
+├── mini_weather_central.ino
+├── config.h
+├── secrets.h
+└── types.h
 ```
 
----
+## `mini_weather_central.ino`
 
-## Serial Monitor
+Main application containing:
 
-Recommended baud rate:
+-   Wi-Fi setup
+-   NTP/time synchronisation
+-   Open-Meteo requests
+-   current weather parsing
+-   five-day forecast cache
+-   weather mapping
+-   LED calculations
+-   sunrise/sunset effects
+-   HTTP API
+-   mock system
+-   MQTT
+-   Home Assistant MQTT Discovery
+-   main loop
 
-```text
-115200
+## `config.h`
+
+Contains hardware and behavioural configuration such as:
+
+``` cpp
+LED_RING_PIN
+LED_RING_COUNT
+
+ENABLE_WEATHER_LIGHT
+ENABLE_SOLAR_EFFECTS
+
+WEATHER_UPDATE_INTERVAL
+LED_RING_UPDATE_INTERVAL
+SOLAR_EFFECT_HALF_WINDOW_SECONDS
 ```
 
-Typical startup output:
+Settings for the future wet version may also exist in the
+firmware/configuration, but they are not required by the current dry
+hardware.
 
-```text
-==========================
-WEATHER JAR BOOT
-==========================
+## `secrets.h`
 
-Initialising FastLED...
-FastLED ready.
+Contains private/local configuration such as:
 
-Connecting to Wi-Fi...
-Wi-Fi connected.
-IP address: 192.168.1.123
+``` cpp
+WIFI_SSID
+WIFI_PASSWORD
 
-Synchronising time...
-Time synchronised.
+LATITUDE
+LONGITUDE
 
-Fetching weather...
-
-==========================
-Temperature: 23.70 C
-Weather code: 2
-Precipitation: 0.00 mm
-Rain: 0.00 mm
-
-WEATHER: partly_cloudy
-==========================
-
-HTTP server started.
-Applying initial weather light...
-Initial weather light applied.
-
-==========================
-SETUP COMPLETE
-==========================
+MQTT_BROKER
+MQTT_PORT
+MQTT_USER
+MQTT_PASSWORD
 ```
 
----
+Keep this file private.
 
-## Libraries
+## Location
 
-The project currently uses:
+The firmware also exposes a human-readable location name, currently:
 
-```text
+``` text
+London
+```
+
+through `/api/status` and `/api/config`.
+
+Latitude and longitude are used for the actual Open-Meteo request. They
+do not need to identify an exact home address; approximate local
+coordinates are sufficient.
+
+------------------------------------------------------------------------
+
+# Update Intervals
+
+There are two separate update layers.
+
+## Weather Jar → Open-Meteo
+
+The Jar refreshes weather according to:
+
+``` cpp
+WEATHER_UPDATE_INTERVAL
+```
+
+The current implementation retrieves current weather and the five-day
+daily forecast as part of its weather data update.
+
+## Touchscreen → Weather Jar
+
+The ESPHome panel currently polls:
+
+``` text
+/api/status    every 30 seconds
+/api/forecast  every 15 minutes
+```
+
+The panel therefore refreshes its display independently of when the Jar
+last contacted Open-Meteo.
+
+------------------------------------------------------------------------
+
+# Libraries
+
+Arduino/ESP32 firmware uses:
+
+``` text
 WiFi
 WebServer
 HTTPClient
 ArduinoJson
 FastLED
 time
+PubSubClient
 ```
 
-External libraries that need to be installed through Arduino Library Manager:
+External libraries should be installed as required through Arduino
+Library Manager.
 
-- ArduinoJson
-- FastLED
+------------------------------------------------------------------------
 
-The ESP32 board package provides the remaining ESP32-specific libraries.
+# Serial Monitor
 
----
+Recommended baud rate:
 
-## Development Roadmap
-
-Current:
-
-```text
-Weather API
-    ↓
-ESP32
-    ↓
-Weather interpretation
-    ↓
-Sunrise / sunset interpretation
-    ↓
-WS2812 LED ring
+``` text
+115200
 ```
 
-Planned:
+Useful startup information includes:
 
-```text
-Weather API
-    ↓
-ESP32
-    ├── LED ring
-    ├── lightning LED 1
-    ├── lightning LED 2 (optional, delayed)
-    ├── mist maker
-    └── water pump
+-   Wi-Fi connection
+-   assigned IP address
+-   NTP synchronisation
+-   Open-Meteo fetch
+-   parsed current weather
+-   five-day forecast
+-   HTTP server startup
+-   MQTT broker connection
+-   MQTT subscriptions
+-   Home Assistant discovery publication
+
+------------------------------------------------------------------------
+
+# Current Feature Set
+
+``` text
+Open-Meteo
+    │
+    ▼
+ESP32 Weather Jar
+    │
+    ├── current weather
+    ├── five-day forecast
+    ├── sunrise / sunset
+    ├── night mode
+    ├── user brightness
+    ├── mock/test modes
+    ├── HTTP API
+    ├── MQTT
+    ├── Home Assistant discovery
+    └── WS2812B LED ring
+
+Local network
+    │
+    └── ESPHome touchscreen panel
 ```
 
-Possible future improvements include:
+------------------------------------------------------------------------
 
-- intermittent mist for clouds
-- rain simulation using the pump
-- precipitation intensity mapping
-- lightning frequency based on storm severity
-- smoother weather transitions
-- local web interface
-- persistent configuration
-- OTA firmware updates
-- Home Assistant integration
+# Future Improvements
+
+The current documented build deliberately stops at the dry LED-ring
+version.
+
+A future **wet version** may add:
+
+-   water pump for physical rain
+-   ultrasonic mist maker for fog/cloud effects
+-   one or more dedicated lightning LEDs
+-   precipitation intensity mapping to physical rain
+-   intermittent mist based on weather conditions
+-   lightning frequency/intensity based on storm severity
+
+Other possible software improvements:
+
+-   OTA firmware updates
+-   persistent runtime configuration
+-   smoother transitions between changing weather states
+-   additional Home Assistant entities/telemetry
+
+These are roadmap items and are **not required for the current Weather
+Jar build**.

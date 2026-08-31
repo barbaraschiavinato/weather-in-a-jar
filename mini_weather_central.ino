@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
+#include <PubSubClient.h>
 #include <time.h>
 
 #include "config.h"
@@ -17,6 +18,9 @@
 CRGB leds[LED_RING_COUNT];
 WebServer server(80);
 
+WiFiClient mqttNetworkClient;
+PubSubClient mqttClient(mqttNetworkClient);
+
 // ============================================================
 // GLOBAL STATE
 // ============================================================
@@ -27,7 +31,10 @@ LedState ledState;
 LightningState lightningState;
 
 unsigned long lastWeatherUpdate = 0;
+bool weatherRetryPending = false;
+constexpr unsigned long WEATHER_RETRY_INTERVAL = 5UL * 60UL * 1000UL;
 unsigned long lastLedUpdate = 0;
+unsigned long lastMqttReconnectAttempt = 0;
 
 bool startupError = false;
 
@@ -579,10 +586,24 @@ LedState calculateSunset(
         progress
       );
 
+    float brightnessFactor;
+
+    if (progress < 0.75f) {
+      // Keep sunset colours clearly visible.
+      brightnessFactor = 1.0f;
+    } else {
+      // Fade to black only during the last 25%.
+      float fadeProgress =
+        (progress - 0.75f) / 0.25f;
+
+      brightnessFactor =
+        1.0f - smoothStep(fadeProgress);
+    }
+
     result.brightness =
       (uint8_t)(
         weatherBrightness *
-        (1.0f - progress)
+        brightnessFactor
       );
 
     result.effect =
@@ -615,10 +636,24 @@ LedState calculateSunset(
         progress
       );
 
+    float brightnessFactor;
+
+    if (progress < 0.75f) {
+      // Keep sunset colours clearly visible.
+      brightnessFactor = 1.0f;
+    } else {
+      // Fade to black only during the last 25%.
+      float fadeProgress =
+        (progress - 0.75f) / 0.25f;
+
+      brightnessFactor =
+        1.0f - smoothStep(fadeProgress);
+    }
+
     result.brightness =
       (uint8_t)(
         weatherBrightness *
-        (1.0f - progress)
+        brightnessFactor
       );
 
     result.effect =
@@ -628,10 +663,24 @@ LedState calculateSunset(
     result.color =
       weatherColor;
 
+    float brightnessFactor;
+
+    if (progress < 0.75f) {
+      // Keep sunset colours clearly visible.
+      brightnessFactor = 1.0f;
+    } else {
+      // Fade to black only during the last 25%.
+      float fadeProgress =
+        (progress - 0.75f) / 0.25f;
+
+      brightnessFactor =
+        1.0f - smoothStep(fadeProgress);
+    }
+
     result.brightness =
       (uint8_t)(
         weatherBrightness *
-        (1.0f - progress)
+        brightnessFactor
       );
 
     result.effect =
@@ -713,6 +762,15 @@ LedState calculateLedState() {
 }
 
 // ============================================================
+// USER BRIGHTNESS
+// ============================================================
+
+// Global ring brightness multiplier controlled via MQTT.
+// 100 = use the brightness calculated by the weather/effect logic.
+// 0   = ring off.
+uint8_t userBrightnessPercent = 100;
+
+// ============================================================
 // FASTLED OUTPUT
 // ============================================================
 
@@ -734,19 +792,24 @@ void applyLedState(
   // brighter than the weather background.
   FastLED.setBrightness(255);
 
+  uint8_t effectiveBrightness =
+    ((uint16_t)state.brightness *
+     userBrightnessPercent) /
+    100;
+
   uint8_t baseR =
     ((uint16_t)state.color.r *
-     state.brightness) /
+     effectiveBrightness) /
     255;
 
   uint8_t baseG =
     ((uint16_t)state.color.g *
-     state.brightness) /
+     effectiveBrightness) /
     255;
 
   uint8_t baseB =
     ((uint16_t)state.color.b *
-     state.brightness) /
+     effectiveBrightness) /
     255;
 
   CRGB baseColor(
@@ -1462,6 +1525,17 @@ void applyMockLoopStep(int index) {
   }
 }
 
+unsigned long getMockLoopStepDuration(int index) {
+  switch (index) {
+    case 9:  // sunrise
+    case 10: // sunset
+      return MOCK_LOOP_STEP_MS * 3UL;
+
+    default:
+      return MOCK_LOOP_STEP_MS;
+  }
+}
+
 void startMockLoop() {
   mockLoopState = MockLoopState();
 
@@ -1475,7 +1549,9 @@ void startMockLoop() {
 
   mockLoopState.nextChangeAt =
     millis() +
-    MOCK_LOOP_STEP_MS;
+    getMockLoopStepDuration(
+      mockLoopState.index
+    );
 
   Serial.println(
     "Mock loop started."
@@ -1576,7 +1652,9 @@ void updateMockLoop() {
 
   mockLoopState.nextChangeAt =
     now +
-    MOCK_LOOP_STEP_MS;
+    getMockLoopStepDuration(
+      mockLoopState.index
+    );
 }
 
 // ============================================================
@@ -2414,7 +2492,848 @@ bool connectWiFi() {
     WiFi.localIP()
   );
 
+  Serial.print(
+    "ESP32 MAC Address: "
+  );
+
+  Serial.println(
+    WiFi.macAddress()
+  );
+
   return true;
+}
+
+// ============================================================
+// MQTT
+// ============================================================
+
+const char* MQTT_TOPIC_STATE_MODE =
+  "weatherjar/state/mode";
+
+const char* MQTT_TOPIC_SET_BRIGHTNESS =
+  "weatherjar/set/brightness";
+
+const char* MQTT_TOPIC_STATE_BRIGHTNESS =
+  "weatherjar/state/brightness";
+
+const char* MQTT_DISCOVERY_MODE =
+  "homeassistant/select/weatherjar_mode/config";
+
+const char* MQTT_DISCOVERY_BRIGHTNESS =
+  "homeassistant/number/weatherjar_brightness/config";
+
+const char* MQTT_DISCOVERY_AVAILABILITY =
+  "homeassistant/binary_sensor/weatherjar_online/config";
+
+constexpr uint8_t MQTT_BRIGHTNESS_STEP = 10;
+
+String currentMqttMode = "auto";
+
+String mqttPayloadToString(
+  const byte* payload,
+  unsigned int length
+) {
+  String result;
+  result.reserve(length);
+
+  for (unsigned int i = 0; i < length; i++) {
+    result += (char)payload[i];
+  }
+
+  return result;
+}
+
+void publishMqttModeState() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  mqttClient.publish(
+    MQTT_TOPIC_STATE_MODE,
+    currentMqttMode.c_str(),
+    true
+  );
+}
+
+void publishMqttBrightnessState() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  char value[4];
+
+  snprintf(
+    value,
+    sizeof(value),
+    "%u",
+    userBrightnessPercent
+  );
+
+  mqttClient.publish(
+    MQTT_TOPIC_STATE_BRIGHTNESS,
+    value,
+    true
+  );
+}
+
+void setMqttBrightnessPercent(
+  int value
+) {
+  value =
+    constrain(
+      value,
+      0,
+      100
+    );
+
+  userBrightnessPercent =
+    (uint8_t)value;
+
+  // Force a redraw even if the calculated weather state itself
+  // has not changed.
+  applyLedState(
+    ledState
+  );
+
+  publishMqttBrightnessState();
+
+  Serial.print(
+    "Weather Jar brightness: "
+  );
+  Serial.print(
+    userBrightnessPercent
+  );
+  Serial.println("%");
+}
+
+bool applyMqttBrightnessCommand(
+  String command
+) {
+  command.trim();
+  command.toLowerCase();
+
+  if (
+    command == "up" ||
+    command == "increase" ||
+    command == "+"
+  ) {
+    setMqttBrightnessPercent(
+      min(
+        100,
+        (int)userBrightnessPercent +
+          MQTT_BRIGHTNESS_STEP
+      )
+    );
+
+    return true;
+  }
+
+  if (
+    command == "down" ||
+    command == "decrease" ||
+    command == "-"
+  ) {
+    setMqttBrightnessPercent(
+      max(
+        0,
+        (int)userBrightnessPercent -
+          MQTT_BRIGHTNESS_STEP
+      )
+    );
+
+    return true;
+  }
+
+  bool numeric = command.length() > 0;
+
+  for (
+    size_t i = 0;
+    i < command.length();
+    i++
+  ) {
+    if (!isDigit(command[i])) {
+      numeric = false;
+      break;
+    }
+  }
+
+  if (numeric) {
+    int value =
+      command.toInt();
+
+    if (
+      value >= 0 &&
+      value <= 100
+    ) {
+      setMqttBrightnessPercent(
+        value
+      );
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void applyCurrentLedState() {
+  LedState newState =
+    calculateLedState();
+
+  if (
+    ledOutputChanged(
+      ledState,
+      newState
+    )
+  ) {
+    applyLedState(
+      newState
+    );
+  }
+
+  ledState =
+    newState;
+}
+
+void setMqttAutoMode() {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
+  mockState =
+    MockState();
+
+  lightningState =
+    LightningState();
+
+  stopLightningOutputs();
+
+  currentMqttMode =
+    "auto";
+
+  applyCurrentLedState();
+}
+
+void setMqttWeatherMode(
+  WeatherType weather,
+  const String& modeName
+) {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
+  mockState =
+    MockState();
+
+  lightningState =
+    LightningState();
+
+  stopLightningOutputs();
+
+  mockState.enabled =
+    true;
+
+  mockState.overrideWeather =
+    true;
+
+  mockState.weather =
+    weather;
+
+  // Force DAY so a manual weather command is visible even when
+  // the real local period is NIGHT.
+  mockState.overridePeriod =
+    true;
+
+  mockState.period =
+    DayPeriod::DAY;
+
+  mockState.startedAt =
+    millis();
+
+  currentMqttMode =
+    modeName;
+
+  if (
+    weather ==
+      WeatherType::THUNDERSTORM &&
+    (
+      ENABLE_LIGHTNING_LED ||
+      ENABLE_LIGHTNING_LED_2 ||
+      ENABLE_RING_LIGHTNING
+    )
+  ) {
+    beginLightningEvent();
+  }
+
+  applyCurrentLedState();
+}
+
+void setMqttSolarMode(
+  DayPeriod period,
+  const String& modeName
+) {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
+  mockState =
+    MockState();
+
+  lightningState =
+    LightningState();
+
+  stopLightningOutputs();
+
+  mockState.enabled =
+    true;
+
+  mockState.overrideWeather =
+    true;
+
+  // Use clear weather so sunrise/sunset shows the full solar palette.
+  mockState.weather =
+    WeatherType::CLEAR;
+
+  mockState.overridePeriod =
+    true;
+
+  mockState.period =
+    period;
+
+  // Same speed used by the built-in mock loop:
+  // 3600 / 120 = 30 seconds.
+  mockState.speed =
+    120.0f;
+
+  mockState.startedAt =
+    millis();
+
+  currentMqttMode =
+    modeName;
+
+  applyCurrentLedState();
+}
+
+void setMqttOffMode() {
+  if (mockLoopState.enabled) {
+    stopMockLoop(false);
+  }
+
+  mockState =
+    MockState();
+
+  lightningState =
+    LightningState();
+
+  stopLightningOutputs();
+
+  mockState.enabled =
+    true;
+
+  mockState.overridePeriod =
+    true;
+
+  // NIGHT already maps to brightness 0 in calculateLedState().
+  mockState.period =
+    DayPeriod::NIGHT;
+
+  mockState.startedAt =
+    millis();
+
+  currentMqttMode =
+    "off";
+
+  applyCurrentLedState();
+}
+
+bool applyMqttMode(
+  String mode
+) {
+  mode.trim();
+  mode.toLowerCase();
+
+  if (mode == "auto") {
+    setMqttAutoMode();
+    return true;
+  }
+
+  if (mode == "clear") {
+    setMqttWeatherMode(
+      WeatherType::CLEAR,
+      "clear"
+    );
+    return true;
+  }
+
+  if (mode == "mainly_clear") {
+    setMqttWeatherMode(
+      WeatherType::MAINLY_CLEAR,
+      "mainly_clear"
+    );
+    return true;
+  }
+
+  if (mode == "partly_cloudy") {
+    setMqttWeatherMode(
+      WeatherType::PARTLY_CLOUDY,
+      "partly_cloudy"
+    );
+    return true;
+  }
+
+  if (mode == "overcast") {
+    setMqttWeatherMode(
+      WeatherType::OVERCAST,
+      "overcast"
+    );
+    return true;
+  }
+
+  if (mode == "fog") {
+    setMqttWeatherMode(
+      WeatherType::FOG,
+      "fog"
+    );
+    return true;
+  }
+
+  if (mode == "drizzle") {
+    setMqttWeatherMode(
+      WeatherType::DRIZZLE,
+      "drizzle"
+    );
+    return true;
+  }
+
+  if (mode == "rain") {
+    setMqttWeatherMode(
+      WeatherType::RAIN,
+      "rain"
+    );
+    return true;
+  }
+
+  if (mode == "snow") {
+    setMqttWeatherMode(
+      WeatherType::SNOW,
+      "snow"
+    );
+    return true;
+  }
+
+  if (
+    mode == "storm" ||
+    mode == "thunderstorm"
+  ) {
+    setMqttWeatherMode(
+      WeatherType::THUNDERSTORM,
+      "storm"
+    );
+    return true;
+  }
+
+  if (mode == "sunrise") {
+    setMqttSolarMode(
+      DayPeriod::SUNRISE,
+      "sunrise"
+    );
+    return true;
+  }
+
+  if (mode == "sunset") {
+    setMqttSolarMode(
+      DayPeriod::SUNSET,
+      "sunset"
+    );
+    return true;
+  }
+
+  if (
+    mode == "loop" ||
+    mode == "mock_loop"
+  ) {
+    startMockLoop();
+
+    currentMqttMode =
+      "loop";
+
+    return true;
+  }
+
+  if (mode == "off") {
+    setMqttOffMode();
+    return true;
+  }
+
+  return false;
+}
+
+void mqttCallback(
+  char* topic,
+  byte* payload,
+  unsigned int length
+) {
+  String message =
+    mqttPayloadToString(
+      payload,
+      length
+    );
+
+  message.trim();
+
+  Serial.println();
+  Serial.println(
+    "=========================="
+  );
+  Serial.println(
+    "MQTT MESSAGE RECEIVED"
+  );
+  Serial.print("Topic: ");
+  Serial.println(topic);
+  Serial.print("Payload: ");
+  Serial.println(message);
+  Serial.println(
+    "=========================="
+  );
+
+  if (
+    String(topic) ==
+      MQTT_TOPIC_SET_MODE
+  ) {
+    bool accepted =
+      applyMqttMode(message);
+
+    if (accepted) {
+      Serial.print(
+        "Weather Jar mode applied: "
+      );
+      Serial.println(
+        currentMqttMode
+      );
+
+      mqttClient.publish(
+        MQTT_TOPIC_LAST_COMMAND,
+        currentMqttMode.c_str(),
+        true
+      );
+
+      publishMqttModeState();
+    } else {
+      Serial.print(
+        "Unknown MQTT mode: "
+      );
+      Serial.println(
+        message
+      );
+    }
+
+    return;
+  }
+
+  if (
+    String(topic) ==
+      MQTT_TOPIC_SET_BRIGHTNESS
+  ) {
+    bool accepted =
+      applyMqttBrightnessCommand(
+        message
+      );
+
+    if (!accepted) {
+      Serial.print(
+        "Unknown MQTT brightness command: "
+      );
+      Serial.println(
+        message
+      );
+    }
+  }
+}
+
+String buildMqttClientId() {
+  uint64_t chipId =
+    ESP.getEfuseMac();
+
+  char suffix[13];
+
+  snprintf(
+    suffix,
+    sizeof(suffix),
+    "%04X%08X",
+    (uint16_t)(chipId >> 32),
+    (uint32_t)chipId
+  );
+
+  return String(MQTT_CLIENT_ID_PREFIX) +
+    "-" +
+    suffix;
+}
+
+void publishMqttDiscovery() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  const char* deviceJson =
+    "\"device\":{"
+    "\"identifiers\":[\"weatherjar_esp32\"],"
+    "\"name\":\"Weather Jar\","
+    "\"manufacturer\":\"DIY\","
+    "\"model\":\"ESP32 Weather Jar\""
+    "}";
+
+  String modeConfig =
+    "{"
+    "\"name\":\"Mode\","
+    "\"unique_id\":\"weatherjar_mode\","
+    "\"command_topic\":\"weatherjar/set/mode\","
+    "\"state_topic\":\"weatherjar/state/mode\","
+    "\"availability_topic\":\"weatherjar/status/availability\","
+    "\"payload_available\":\"online\","
+    "\"payload_not_available\":\"offline\","
+    "\"options\":["
+      "\"auto\","
+      "\"clear\","
+      "\"mainly_clear\","
+      "\"partly_cloudy\","
+      "\"overcast\","
+      "\"fog\","
+      "\"drizzle\","
+      "\"rain\","
+      "\"snow\","
+      "\"storm\","
+      "\"sunrise\","
+      "\"sunset\","
+      "\"loop\","
+      "\"off\""
+    "],";
+
+  modeConfig +=
+    deviceJson;
+
+  modeConfig +=
+    "}";
+
+  bool modeDiscoveryOk = mqttClient.publish(
+    MQTT_DISCOVERY_MODE,
+    modeConfig.c_str(),
+    true
+  );
+
+  Serial.print("MQTT Discovery Mode: ");
+  Serial.println(modeDiscoveryOk ? "OK" : "FAILED");
+
+  String brightnessConfig =
+    "{"
+    "\"name\":\"Brightness\","
+    "\"unique_id\":\"weatherjar_brightness\","
+    "\"command_topic\":\"weatherjar/set/brightness\","
+    "\"state_topic\":\"weatherjar/state/brightness\","
+    "\"availability_topic\":\"weatherjar/status/availability\","
+    "\"payload_available\":\"online\","
+    "\"payload_not_available\":\"offline\","
+    "\"min\":0,"
+    "\"max\":100,"
+    "\"step\":10,"
+    "\"mode\":\"slider\","
+    "\"unit_of_measurement\":\"%\","
+    "\"icon\":\"mdi:brightness-6\",";
+
+  brightnessConfig +=
+    deviceJson;
+
+  brightnessConfig +=
+    "}";
+
+  bool brightnessDiscoveryOk = mqttClient.publish(
+    MQTT_DISCOVERY_BRIGHTNESS,
+    brightnessConfig.c_str(),
+    true
+  );
+
+  Serial.print("MQTT Discovery Brightness: ");
+  Serial.println(brightnessDiscoveryOk ? "OK" : "FAILED");
+
+  String availabilityConfig =
+    "{"
+    "\"name\":\"Online\","
+    "\"unique_id\":\"weatherjar_online\","
+    "\"state_topic\":\"weatherjar/status/availability\","
+    "\"payload_on\":\"online\","
+    "\"payload_off\":\"offline\","
+    "\"device_class\":\"connectivity\",";
+
+  availabilityConfig +=
+    deviceJson;
+
+  availabilityConfig +=
+    "}";
+
+  bool availabilityDiscoveryOk = mqttClient.publish(
+    MQTT_DISCOVERY_AVAILABILITY,
+    availabilityConfig.c_str(),
+    true
+  );
+
+  Serial.print("MQTT Discovery Online: ");
+  Serial.println(availabilityDiscoveryOk ? "OK" : "FAILED");
+
+  Serial.println(
+    "MQTT Discovery published."
+  );
+}
+
+bool connectMqtt() {
+  if (
+    WiFi.status() != WL_CONNECTED
+  ) {
+    return false;
+  }
+
+  String clientId =
+    buildMqttClientId();
+
+  Serial.print(
+    "Connecting to MQTT broker "
+  );
+  Serial.print(MQTT_BROKER);
+  Serial.print(":");
+  Serial.print(MQTT_PORT);
+  Serial.print(" as ");
+  Serial.print(clientId);
+  Serial.print("...");
+
+  bool connected = false;
+
+  if (
+    strlen(MQTT_USER) > 0
+  ) {
+    connected = mqttClient.connect(
+      clientId.c_str(),
+      MQTT_USER,
+      MQTT_PASSWORD,
+      MQTT_TOPIC_AVAILABILITY,
+      0,
+      true,
+      "offline"
+    );
+  } else {
+    connected = mqttClient.connect(
+      clientId.c_str(),
+      MQTT_TOPIC_AVAILABILITY,
+      0,
+      true,
+      "offline"
+    );
+  }
+
+  if (!connected) {
+    Serial.print(
+      " failed, state="
+    );
+    Serial.println(
+      mqttClient.state()
+    );
+
+    return false;
+  }
+
+  Serial.println(" connected.");
+
+  mqttClient.publish(
+    MQTT_TOPIC_AVAILABILITY,
+    "online",
+    true
+  );
+
+  publishMqttModeState();
+  publishMqttBrightnessState();
+  publishMqttDiscovery();
+
+  bool subscribed =
+    mqttClient.subscribe(
+      MQTT_TOPIC_SET_MODE
+    );
+
+  Serial.print(
+    "MQTT subscribe "
+  );
+  Serial.print(
+    MQTT_TOPIC_SET_MODE
+  );
+  Serial.println(
+    subscribed
+      ? " OK"
+      : " FAILED"
+  );
+
+  bool brightnessSubscribed =
+    mqttClient.subscribe(
+      MQTT_TOPIC_SET_BRIGHTNESS
+    );
+
+  Serial.print(
+    "MQTT subscribe "
+  );
+  Serial.print(
+    MQTT_TOPIC_SET_BRIGHTNESS
+  );
+  Serial.println(
+    brightnessSubscribed
+      ? " OK"
+      : " FAILED"
+  );
+
+  return
+    subscribed &&
+    brightnessSubscribed;
+}
+
+void setupMqtt() {
+  mqttClient.setServer(
+    MQTT_BROKER,
+    MQTT_PORT
+  );
+
+  mqttClient.setCallback(
+    mqttCallback
+  );
+
+  mqttClient.setBufferSize(
+    1024
+  );
+
+  // Do not make MQTT a boot requirement. The Weather Jar must keep
+  // working even if Home Assistant or Mosquitto is temporarily offline.
+  connectMqtt();
+}
+
+void maintainMqtt() {
+  if (
+    WiFi.status() != WL_CONNECTED
+  ) {
+    return;
+  }
+
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+    return;
+  }
+
+  unsigned long now =
+    millis();
+
+  if (
+    now - lastMqttReconnectAttempt <
+    MQTT_RECONNECT_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  lastMqttReconnectAttempt =
+    now;
+
+  connectMqtt();
 }
 
 // ============================================================
@@ -2631,13 +3550,15 @@ void setup() {
 
   setupServer();
 
+  if (wifiOk) {
+    setupMqtt();
+  }
+
   if (
     !wifiOk ||
-    !timeOk ||
-    !weatherOk
+    !timeOk
   ) {
-    // Red = startup error. Keep the ring red until reboot,
-    // so the normal weather renderer cannot overwrite it.
+    // Wi-Fi or time failure is still a hard startup error.
     startupError = true;
     showStartupRed();
 
@@ -2654,6 +3575,39 @@ void setup() {
 
     lastLedUpdate =
       millis();
+
+    return;
+  }
+
+  if (!weatherOk) {
+    // Open-Meteo can be temporarily unavailable. Keep the device alive,
+    // leave the startup light red for now, and retry after 5 minutes.
+    weatherRetryPending = true;
+    showStartupRed();
+
+    Serial.println(
+      "Weather API unavailable at startup. Retrying in 5 minutes."
+    );
+
+    Serial.printf(
+      "Wi-Fi: %s | Time: %s | Weather API: %s\n",
+      wifiOk ? "OK" : "ERROR",
+      timeOk ? "OK" : "ERROR",
+      weatherOk ? "OK" : "ERROR"
+    );
+
+    lastLedUpdate =
+      millis();
+
+    Serial.println(
+      "=========================="
+    );
+    Serial.println(
+      "SETUP COMPLETE - WEATHER RETRY PENDING"
+    );
+    Serial.println(
+      "=========================="
+    );
 
     return;
   }
@@ -2703,6 +3657,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  maintainMqtt();
 
   if (startupError) {
     delay(100);
@@ -2713,12 +3668,23 @@ void loop() {
   updateMockLoop();
 
   // WEATHER
+  unsigned long weatherInterval =
+    weatherRetryPending
+      ? WEATHER_RETRY_INTERVAL
+      : WEATHER_UPDATE_INTERVAL;
+
   if (
     millis() -
     lastWeatherUpdate >=
-    WEATHER_UPDATE_INTERVAL
+    weatherInterval
   ) {
-    if (updateWeather()) {
+    bool weatherOk =
+      updateWeather();
+
+    weatherRetryPending =
+      !weatherOk;
+
+    if (weatherOk) {
       if (!mockLoopState.blackout) {
         LedState newState =
           calculateLedState();
@@ -2737,6 +3703,14 @@ void loop() {
         ledState =
           newState;
       }
+
+      Serial.println(
+        "Weather update OK. Next update at normal interval."
+      );
+    } else {
+      Serial.println(
+        "Weather update failed. Retrying in 5 minutes."
+      );
     }
 
     lastWeatherUpdate =

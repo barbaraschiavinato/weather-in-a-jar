@@ -15,7 +15,6 @@ constexpr int LED_RING_PIN = 18;
 constexpr int LED_RING_COUNT = 35;
 constexpr bool ENABLE_RING_LIGHTNING = true;
 
-
 // 100 ms = maximum 10 FPS.
 // More than enough for very slow weather / solar fades.
 constexpr unsigned long LED_RING_UPDATE_INTERVAL = 100;
@@ -67,7 +66,7 @@ constexpr bool ENABLE_MISTER = false;
 // AUTOMATIC MOCK LOOP
 // ============================================================
 
-// Each visual mock runs for 10 seconds.
+// Each standard visual mock runs for 10 seconds.
 constexpr unsigned long MOCK_LOOP_STEP_MS =
   10UL * 1000UL;
 
@@ -112,3 +111,27 @@ constexpr bool ENABLE_WEATHER_LIGHT = true;
 constexpr bool ENABLE_SOLAR_EFFECTS = true;
 
 
+// ============================================================
+// MQTT / HOME ASSISTANT
+// ============================================================
+
+// Home Assistant / Mosquitto host.
+// Home Assistant itself is available at http://192.168.1.223:8123,
+// while MQTT uses the standard broker port below.
+constexpr uint16_t MQTT_PORT = 1883;
+
+const char* MQTT_CLIENT_ID_PREFIX = "weatherjar";
+
+const char* MQTT_TOPIC_SET_MODE =
+  "weatherjar/set/mode";
+
+const char* MQTT_TOPIC_AVAILABILITY =
+  "weatherjar/status/availability";
+
+const char* MQTT_TOPIC_LAST_COMMAND =
+  "weatherjar/status/last_command";
+
+constexpr unsigned long MQTT_RECONNECT_INTERVAL_MS =
+  5000UL;
+
+constexpr uint16_t MQTT_BUFFER_SIZE = 512;

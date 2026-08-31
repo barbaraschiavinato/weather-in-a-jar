@@ -1870,6 +1870,11 @@ void handleConfig() {
     WEATHER_UPDATE_INTERVAL /
     1000UL;
 
+  // Convenience value for clients such as the Weather Panel.
+  doc["weatherUpdateMinutes"] =
+    WEATHER_UPDATE_INTERVAL /
+    60000UL;
+
   doc["solarEffectWindowMinutes"] =
     SOLAR_EFFECT_HALF_WINDOW_SECONDS *
     2 /
@@ -2516,6 +2521,12 @@ const char* MQTT_TOPIC_SET_BRIGHTNESS =
 const char* MQTT_TOPIC_STATE_BRIGHTNESS =
   "weatherjar/state/brightness";
 
+const char* MQTT_TOPIC_SET_FORECAST =
+  "weatherjar/set/forecast";
+
+const char* MQTT_TOPIC_STATE_FORECAST =
+  "weatherjar/state/forecast";
+
 const char* MQTT_DISCOVERY_MODE =
   "homeassistant/select/weatherjar_mode/config";
 
@@ -2528,6 +2539,8 @@ const char* MQTT_DISCOVERY_AVAILABILITY =
 constexpr uint8_t MQTT_BRIGHTNESS_STEP = 10;
 
 String currentMqttMode = "auto";
+int currentForecastOffset = -1;
+String currentForecastWeather = "";
 
 String mqttPayloadToString(
   const byte* payload,
@@ -2852,6 +2865,10 @@ bool applyMqttMode(
   mode.trim();
   mode.toLowerCase();
 
+  currentForecastOffset = -1;
+  currentForecastWeather = "";
+  publishMqttForecastState();
+
   if (mode == "auto") {
     setMqttAutoMode();
     return true;
@@ -3032,6 +3049,24 @@ void mqttCallback(
 
   if (
     String(topic) ==
+      MQTT_TOPIC_SET_FORECAST
+  ) {
+    bool accepted =
+      applyMqttForecast(
+        message
+      );
+
+    if (!accepted) {
+      Serial.println(
+        "Forecast command rejected."
+      );
+    }
+
+    return;
+  }
+
+  if (
+    String(topic) ==
       MQTT_TOPIC_SET_BRIGHTNESS
   ) {
     bool accepted =
@@ -3048,6 +3083,127 @@ void mqttCallback(
       );
     }
   }
+}
+
+void publishMqttForecastState() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+
+  JsonDocument doc;
+
+  if (currentForecastOffset < 0) {
+    doc["active"] = false;
+    doc["offset"] = -1;
+    doc["weather"] = "";
+  } else {
+    doc["active"] = true;
+    doc["offset"] = currentForecastOffset;
+    doc["weather"] = currentForecastWeather;
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+
+  mqttClient.publish(
+    MQTT_TOPIC_STATE_FORECAST,
+    payload.c_str(),
+    true
+  );
+}
+
+bool applyMqttForecast(
+  const String& payload
+) {
+  JsonDocument doc;
+
+  DeserializationError error =
+    deserializeJson(
+      doc,
+      payload
+    );
+
+  if (error) {
+    Serial.print(
+      "Invalid forecast JSON: "
+    );
+    Serial.println(
+      error.c_str()
+    );
+    return false;
+  }
+
+  if (
+    !doc["offset"].is<int>() ||
+    !doc["weather"].is<const char*>()
+  ) {
+    Serial.println(
+      "Forecast requires offset and weather."
+    );
+    return false;
+  }
+
+  int offset =
+    doc["offset"].as<int>();
+
+  if (
+    offset < 1 ||
+    offset > 4
+  ) {
+    Serial.println(
+      "Forecast offset must be 1..4."
+    );
+    return false;
+  }
+
+  String weatherName =
+    doc["weather"].as<String>();
+
+  WeatherType weather;
+
+  if (
+    !parseWeather(
+      weatherName,
+      weather
+    )
+  ) {
+    Serial.print(
+      "Invalid forecast weather: "
+    );
+    Serial.println(
+      weatherName
+    );
+    return false;
+  }
+
+  // Reuse the already-tested manual weather path.
+  // This forces DAY, so a selected future forecast remains visible
+  // even if the real local time is NIGHT.
+  setMqttWeatherMode(
+    weather,
+    weatherName
+  );
+
+  currentForecastOffset =
+    offset;
+
+  currentForecastWeather =
+    weatherName;
+
+  publishMqttForecastState();
+
+  Serial.print(
+    "Forecast override applied. Day +"
+  );
+  Serial.print(offset);
+  Serial.print(
+    ", weather: "
+  );
+  Serial.println(
+    weatherName
+  );
+
+  return true;
 }
 
 String buildMqttClientId() {
@@ -3248,6 +3404,7 @@ bool connectMqtt() {
 
   publishMqttModeState();
   publishMqttBrightnessState();
+  publishMqttForecastState();
   publishMqttDiscovery();
 
   bool subscribed =
@@ -3284,9 +3441,27 @@ bool connectMqtt() {
       : " FAILED"
   );
 
+  bool forecastSubscribed =
+    mqttClient.subscribe(
+      MQTT_TOPIC_SET_FORECAST
+    );
+
+  Serial.print(
+    "MQTT subscribe "
+  );
+  Serial.print(
+    MQTT_TOPIC_SET_FORECAST
+  );
+  Serial.println(
+    forecastSubscribed
+      ? " OK"
+      : " FAILED"
+  );
+
   return
     subscribed &&
-    brightnessSubscribed;
+    brightnessSubscribed &&
+    forecastSubscribed;
 }
 
 void setupMqtt() {

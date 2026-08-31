@@ -1,0 +1,801 @@
+substitutions:
+  name: weather-panel
+  friendly_name: Weather panel
+  jar_host: "192.168.1.XXX"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - delay: 3s
+      - script.execute: refresh_jar_config
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+
+api:
+  encryption:
+    key: "PASTE_YOUR_EXISTING_API_KEY_HERE"
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Weather-Panel Fallback"
+    password: "PASTE_YOUR_EXISTING_FALLBACK_PASSWORD_HERE"
+
+captive_portal:
+
+http_request:
+  id: http_client
+  timeout: 10s
+  verify_ssl: true
+  follow_redirects: true
+
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO2
+    frequency: 1000Hz
+
+light:
+  - platform: monochromatic
+    id: backlight
+    output: backlight_pwm
+    restore_mode: ALWAYS_ON
+
+i2c:
+  id: touch_i2c
+  sda: GPIO19
+  scl: GPIO20
+  scan: true
+
+display:
+  - platform: rpi_dpi_rgb
+    id: main_display
+    update_interval: never
+    color_order: RGB
+    pclk_frequency: 16MHz
+    pclk_inverted: true
+    dimensions:
+      width: 800
+      height: 480
+    de_pin: GPIO40
+    hsync_pin: GPIO39
+    vsync_pin: GPIO41
+    pclk_pin: GPIO42
+    hsync_pulse_width: 4
+    hsync_front_porch: 8
+    hsync_back_porch: 8
+    vsync_pulse_width: 4
+    vsync_front_porch: 8
+    vsync_back_porch: 8
+    data_pins:
+      red: [GPIO45, GPIO48, GPIO47, GPIO21, GPIO14]
+      green: [GPIO5, GPIO6, GPIO7, GPIO15, GPIO16, GPIO4]
+      blue: [GPIO8, GPIO3, GPIO46, GPIO9, GPIO1]
+
+touchscreen:
+  - platform: gt911
+    id: main_touch
+    display: main_display
+    i2c_id: touch_i2c
+    address: 0x5D
+
+font:
+  - file: {type: gfonts, family: Roboto, weight: 400}
+    id: font_14
+    size: 14
+  - file: {type: gfonts, family: Roboto, weight: 500}
+    id: font_16
+    size: 16
+  - file: {type: gfonts, family: Roboto, weight: 700}
+    id: font_18
+    size: 18
+  - file: {type: gfonts, family: Roboto, weight: 700}
+    id: font_22
+    size: 22
+  - file: {type: gfonts, family: Roboto, weight: 700}
+    id: font_52
+    size: 52
+  - file:
+      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+      type: web
+    id: mdi_28
+    size: 28
+    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599","\U000F0156"]
+  - file:
+      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+      type: web
+    id: mdi_44
+    size: 44
+    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599"]
+  - file:
+      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+      type: web
+    id: mdi_82
+    size: 82
+    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599"]
+
+number:
+  - platform: homeassistant
+    id: jar_brightness
+    entity_id: number.living_room_weather_jar_brightness
+    internal: true
+    on_value:
+      - lvgl.label.update:
+          id: brightness_value
+          text:
+            format: "%.0f%%"
+            args: [x]
+
+globals:
+  - id: jar_latitude
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: jar_longitude
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: forecast_mode_1
+    type: std::string
+    initial_value: '"partly_cloudy"'
+  - id: forecast_mode_2
+    type: std::string
+    initial_value: '"partly_cloudy"'
+  - id: forecast_mode_3
+    type: std::string
+    initial_value: '"partly_cloudy"'
+  - id: forecast_mode_4
+    type: std::string
+    initial_value: '"partly_cloudy"'
+
+script:
+  - id: refresh_jar_config
+    mode: restart
+    then:
+      - http_request.get:
+          url: "http://${jar_host}/api/config"
+          capture_response: true
+          max_response_buffer_size: 4096
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code == 200) {
+                    json::parse_json(body, [](JsonObject root) -> bool {
+                      if (root["latitude"].isNull() || root["longitude"].isNull()) return false;
+                      id(jar_latitude) = root["latitude"].as<float>();
+                      id(jar_longitude) = root["longitude"].as<float>();
+                      return true;
+                    });
+                  }
+              - script.execute: refresh_weather
+          on_error:
+            then:
+              - script.execute: refresh_weather
+
+  - id: refresh_weather
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return fabsf(id(jar_latitude)) > 0.1f || fabsf(id(jar_longitude)) > 0.1f;
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  char u[900];
+                  snprintf(u,sizeof(u),
+                    "https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto&forecast_days=5",
+                    id(jar_latitude),id(jar_longitude));
+                  return std::string(u);
+                capture_response: true
+                max_response_buffer_size: 16384
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code != 200) return;
+                        auto icon=[](int c,bool day)->const char*{
+                          if(!day&&(c==0||c==1))return "\U000F0594";
+                          if(c==0)return "\U000F0599"; if(c<=2)return "\U000F0595";
+                          if(c==3)return "\U000F0590"; if(c==45||c==48)return "\U000F0591";
+                          if(c>=51&&c<=57)return "\U000F0597";
+                          if((c>=61&&c<=67)||(c>=80&&c<=82))return (c==65||c==67||c==82)?"\U000F0596":"\U000F0597";
+                          if((c>=71&&c<=77)||c==85||c==86)return "\U000F0598";
+                          if(c>=95)return "\U000F0593"; return "\U000F0590";
+                        };
+                        auto desc=[](int c)->const char*{
+                          if(c==0)return "CLEAR"; if(c==1)return "MAINLY CLEAR"; if(c==2)return "PARTLY CLOUDY";
+                          if(c==3)return "OVERCAST"; if(c==45||c==48)return "FOG"; if(c>=51&&c<=57)return "DRIZZLE";
+                          if((c>=61&&c<=67)||(c>=80&&c<=82))return "RAIN";
+                          if((c>=71&&c<=77)||c==85||c==86)return "SNOW"; if(c>=95)return "THUNDERSTORM"; return "UNKNOWN";
+                        };
+                        auto mode=[](int c)->std::string{
+                          if(c==0)return "clear"; if(c==1)return "mainly_clear"; if(c==2)return "partly_cloudy";
+                          if(c==3)return "overcast"; if(c==45||c==48)return "fog"; if(c>=51&&c<=57)return "drizzle";
+                          if((c>=61&&c<=67)||(c>=80&&c<=82))return "rain";
+                          if((c>=71&&c<=77)||c==85||c==86)return "snow"; if(c>=95)return "storm"; return "overcast";
+                        };
+                        auto wd=[](const char*s)->std::string{
+                          int y,m,d;if(sscanf(s,"%d-%d-%d",&y,&m,&d)!=3)return "---";
+                          if(m<3){m+=12;y--;}int k=y%100,j=y/100,h=(d+(13*(m+1))/5+k+k/4+j/4+5*j)%7;
+                          static const char* n[]={"SAT","SUN","MON","TUE","WED","THU","FRI"};return n[h];
+                        };
+                        json::parse_json(body,[&](JsonObject root)->bool{
+                          JsonObject c=root["current"],d=root["daily"]; if(c.isNull()||d.isNull())return false;
+                          int code=c["weather_code"]|-1; bool day=(c["is_day"]|1)==1;
+                          lv_label_set_text(id(current_weather_icon),icon(code,day));
+                          char b[96];snprintf(b,sizeof(b),"%.0f°",c["temperature_2m"].as<float>());lv_label_set_text(id(current_temperature),b);
+                          lv_label_set_text(id(current_condition),desc(code));
+                          snprintf(b,sizeof(b),"Humidity %.0f%%   •   Wind %.0f km/h",c["relative_humidity_2m"].as<float>(),c["wind_speed_10m"].as<float>());
+                          lv_label_set_text(id(current_details),b);
+                          JsonArray dates=d["time"],codes=d["weather_code"],hi=d["temperature_2m_max"],lo=d["temperature_2m_min"];
+                          if(dates.size()<5)return false;
+                          lv_obj_t* dl[]={id(day0_label),id(day1_label),id(day2_label),id(day3_label),id(day4_label)};
+                          lv_obj_t* ic[]={id(day0_icon),id(day1_icon),id(day2_icon),id(day3_icon),id(day4_icon)};
+                          lv_obj_t* tp[]={id(day0_temp),id(day1_temp),id(day2_temp),id(day3_temp),id(day4_temp)};
+                          for(int i=0;i<5;i++){int x=codes[i].as<int>();std::string s=i?"": "TODAY";if(i)s=wd(dates[i].as<const char*>());lv_label_set_text(dl[i],s.c_str());lv_label_set_text(ic[i],icon(x,true));snprintf(b,sizeof(b),"%.0f° / %.0f°",lo[i].as<float>(),hi[i].as<float>());lv_label_set_text(tp[i],b);}
+                          id(forecast_mode_1)=mode(codes[1]);id(forecast_mode_2)=mode(codes[2]);id(forecast_mode_3)=mode(codes[3]);id(forecast_mode_4)=mode(codes[4]);return true;
+                        });
+
+  - id: live
+    then:
+      - homeassistant.action:
+          action: select.select_option
+          data: {entity_id: select.living_room_weather_jar_mode, option: auto}
+
+  - id: mock
+    parameters: {mode: string}
+    then:
+      - homeassistant.action:
+          action: select.select_option
+          data:
+            entity_id: select.living_room_weather_jar_mode
+            option: !lambda return mode;
+
+  - id: forecast
+    parameters: {offset: int, weather: string}
+    then:
+      - homeassistant.action:
+          action: mqtt.publish
+          data:
+            topic: weatherjar/set/forecast
+            payload: !lambda |-
+              char b[100];snprintf(b,sizeof(b),"{\"offset\":%d,\"weather\":\"%s\"}",offset,weather.c_str());return std::string(b);
+
+interval:
+  - interval: 15min
+    then: [script.execute: refresh_weather]
+  - interval: 1h
+    then: [script.execute: refresh_jar_config]
+
+lvgl:
+  displays: [main_display]
+  touchscreens: [main_touch]
+  buffer_size: 25%
+  pages:
+    - id: weather_page
+      bg_color: 0xFFFFFF
+      widgets:
+        - label: {x: 30, y: 18, text: "WEATHER", text_font: font_22, text_color: 0x171A1F}
+        - label: {x: 30, y: 47, text: "Weather Jar", text_font: font_14, text_color: 0x7A8088}
+        - obj:
+            x: 30
+            y: 82
+            width: 740
+            height: 155
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 18
+            widgets:
+              - label: {id: current_weather_icon, x: 25, y: 28, width: 105, text: "\U000F0595", text_font: mdi_82, text_color: 0x3D78C5, text_align: CENTER}
+              - label: {id: current_temperature, x: 155, y: 23, text: "--°", text_font: font_52, text_color: 0x171A1F}
+              - label: {id: current_condition, x: 158, y: 89, text: "LOADING...", text_font: font_18, text_color: 0x171A1F}
+              - label: {id: current_details, x: 425, y: 63, width: 285, text: "Humidity --%   •   Wind -- km/h", text_font: font_16, text_color: 0x626870, text_align: RIGHT}
+
+        - button:
+            x: 30
+            y: 253
+            width: 136
+            height: 130
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 16
+            on_click: [script.execute: live]
+            widgets:
+              - label: {id: day0_label, y: 10, width: 136, text: "TODAY", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label: {id: day0_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
+              - label: {id: day0_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+
+        - button:
+            x: 181
+            y: 253
+            width: 136
+            height: 130
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 16
+            on_click:
+              - script.execute: {id: forecast, offset: 1, weather: !lambda "return id(forecast_mode_1);"}
+            widgets:
+              - label: {id: day1_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label: {id: day1_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
+              - label: {id: day1_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+
+        - button:
+            x: 332
+            y: 253
+            width: 136
+            height: 130
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 16
+            on_click:
+              - script.execute: {id: forecast, offset: 2, weather: !lambda "return id(forecast_mode_2);"}
+            widgets:
+              - label: {id: day2_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label: {id: day2_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
+              - label: {id: day2_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+
+        - button:
+            x: 483
+            y: 253
+            width: 136
+            height: 130
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 16
+            on_click:
+              - script.execute: {id: forecast, offset: 3, weather: !lambda "return id(forecast_mode_3);"}
+            widgets:
+              - label: {id: day3_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label: {id: day3_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
+              - label: {id: day3_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+
+        - button:
+            x: 634
+            y: 253
+            width: 136
+            height: 130
+            bg_color: 0xF4F6F8
+            border_width: 0
+            radius: 16
+            on_click:
+              - script.execute: {id: forecast, offset: 4, weather: !lambda "return id(forecast_mode_4);"}
+            widgets:
+              - label: {id: day4_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label: {id: day4_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
+              - label: {id: day4_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+
+        - obj:
+            x: 30
+            y: 400
+            width: 740
+            height: 62
+            bg_color: 0xFFFFFF
+            border_width: 0
+            widgets:
+              - button:
+                  x: 0
+                  y: 5
+                  width: 54
+                  height: 52
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action:
+                        action: number.decrement
+                        data: {entity_id: number.living_room_weather_jar_brightness}
+                  widgets: [{label: {text: "−", text_font: font_22, align: CENTER}}]
+              - label: {id: brightness_value, x: 59, y: 20, width: 62, text: "--%", text_align: CENTER, text_font: font_16}
+              - button:
+                  x: 126
+                  y: 5
+                  width: 54
+                  height: 52
+                  border_width: 0
+                  on_click:
+                    - homeassistant.action:
+                        action: number.increment
+                        data: {entity_id: number.living_room_weather_jar_brightness}
+                  widgets: [{label: {text: "+", text_font: font_22, align: CENTER}}]
+              - button:
+                  x: 485
+                  y: 5
+                  width: 110
+                  height: 52
+                  border_width: 0
+                  on_click: [script.execute: live]
+                  widgets: [{label: {text: "LIVE", text_font: font_16, text_color: 0x25824A, align: CENTER}}]
+              - button:
+                  x: 605
+                  y: 5
+                  width: 135
+                  height: 52
+                  border_width: 0
+                  on_click: [lvgl.widget.show: mock_modal]
+                  widgets: [{label: {text: "MOCK", text_font: font_16, align: CENTER}}]
+
+        - obj:
+            id: mock_modal
+            hidden: true
+            x: 95
+            y: 55
+            width: 610
+            height: 370
+            bg_color: 0x20242A
+            border_width: 0
+            shadow_width: 0
+            radius: 22
+            widgets:
+              - label: {x: 16, y: 12, text: "WEATHER JAR MOCK", text_font: font_22, text_color: 0xFFFFFF}
+              - button:
+                  x: 544
+                  y: 6
+                  width: 42
+                  height: 42
+                  bg_color: 0x353A40
+                  border_width: 0
+                  on_click: [lvgl.widget.hide: mock_modal]
+                  widgets: [{label: {text: "\U000F0156", text_font: mdi_28, text_color: 0xFFFFFF, align: CENTER}}]
+
+              - button:
+                  x: 16
+                  y: 65
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: clear
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖙"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "CLEAR"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 159
+                  y: 65
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: mainly_clear
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖕"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "MAINLY CLEAR"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 302
+                  y: 65
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: partly_cloudy
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖕"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "PARTLY CLOUDY"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 445
+                  y: 65
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: overcast
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖐"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "OVERCAST"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 16
+                  y: 158
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: fog
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖑"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "FOG"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 159
+                  y: 158
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: drizzle
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖗"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "DRIZZLE"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 302
+                  y: 158
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: rain
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖗"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "RAIN"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 445
+                  y: 158
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: snow
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖘"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "SNOW"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 16
+                  y: 251
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: storm
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖓"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "STORM"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 159
+                  y: 251
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: sunrise
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖙"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "SUNRISE"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 302
+                  y: 251
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: sunset
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖙"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "SUNSET"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF
+
+              - button:
+                  x: 445
+                  y: 251
+                  width: 132
+                  height: 82
+                  bg_color: 0x353A40
+                  border_width: 0
+                  shadow_width: 0
+                  radius: 14
+                  on_click:
+                    - script.execute:
+                        id: mock
+                        mode: loop
+                  widgets:
+                    - label:
+                        y: 5
+                        width: 132
+                        text: "󰖕"
+                        text_align: CENTER
+                        text_font: mdi_28
+                        text_color: 0xFFFFFF
+                    - label:
+                        y: 47
+                        width: 132
+                        text: "LOOP"
+                        text_align: CENTER
+                        text_font: font_14
+                        text_color: 0xFFFFFF

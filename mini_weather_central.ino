@@ -39,6 +39,23 @@ unsigned long lastMqttReconnectAttempt = 0;
 bool startupError = false;
 
 // ============================================================
+// 5-DAY FORECAST STATE
+// ============================================================
+
+struct ForecastDay {
+  String date = "";
+  int weatherCode = -1;
+  WeatherType weather = WeatherType::UNKNOWN;
+  float temperatureMax = 0.0f;
+  float temperatureMin = 0.0f;
+  bool valid = false;
+};
+
+constexpr int FORECAST_DAY_COUNT = 5;
+ForecastDay forecastDays[FORECAST_DAY_COUNT];
+bool forecastValid = false;
+
+// ============================================================
 // RING LIGHTNING STATE
 // ============================================================
 
@@ -770,6 +787,13 @@ LedState calculateLedState() {
 // 0   = ring off.
 uint8_t userBrightnessPercent = 100;
 
+// Human-readable location exposed to the Weather Panel.
+// Keep this independent from the coordinates used by Open-Meteo.
+constexpr const char* LOCATION_NAME = "London";
+
+// Forward declaration: the HTTP API uses the same brightness setter as MQTT.
+void setMqttBrightnessPercent(int value);
+
 // ============================================================
 // FASTLED OUTPUT
 // ============================================================
@@ -1243,9 +1267,9 @@ bool updateWeather() {
     "&longitude=" +
     String(LONGITUDE, 6) +
     "&current=temperature_2m,weather_code,precipitation,rain"
-    "&daily=sunrise,sunset"
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset"
     "&timezone=auto"
-    "&forecast_days=1";
+    "&forecast_days=5";
 
   Serial.println();
   Serial.println(
@@ -1316,6 +1340,24 @@ bool updateWeather() {
     weatherCodeToType(
       weatherState.weatherCode
     );
+
+  // Cache the five daily forecasts for the touchscreen panel.
+  forecastValid = true;
+
+  for (int i = 0; i < FORECAST_DAY_COUNT; i++) {
+    ForecastDay& day = forecastDays[i];
+
+    day.date = doc["daily"]["time"][i] | "";
+    day.weatherCode = doc["daily"]["weather_code"][i] | -1;
+    day.weather = weatherCodeToType(day.weatherCode);
+    day.temperatureMax = doc["daily"]["temperature_2m_max"][i] | 0.0f;
+    day.temperatureMin = doc["daily"]["temperature_2m_min"][i] | 0.0f;
+    day.valid = day.date.length() > 0 && day.weatherCode >= 0;
+
+    if (!day.valid) {
+      forecastValid = false;
+    }
+  }
 
   String sunriseString =
     doc["daily"]["sunrise"][0]
@@ -1401,6 +1443,19 @@ bool updateWeather() {
   Serial.println(
     "=========================="
   );
+
+  Serial.println("5-day forecast:");
+  for (int i = 0; i < FORECAST_DAY_COUNT; i++) {
+    if (!forecastDays[i].valid) continue;
+    Serial.printf(
+      "  Day %d: %s | %s | %.1f / %.1f C\n",
+      i,
+      forecastDays[i].date.c_str(),
+      weatherToString(forecastDays[i].weather).c_str(),
+      forecastDays[i].temperatureMax,
+      forecastDays[i].temperatureMin
+    );
+  }
 
   return true;
 }
@@ -1729,6 +1784,15 @@ void handleStatus() {
     WiFi.localIP()
       .toString();
 
+  doc["location"] =
+    LOCATION_NAME;
+
+  // User-selected brightness percentage (0-100).
+  // This is intentionally separate from ring.brightness, which is
+  // the instantaneous brightness calculated by the current effect.
+  doc["brightnessPercent"] =
+    userBrightnessPercent;
+
   doc["source"] =
     mockLoopState.enabled
       ? "mock_loop"
@@ -1794,6 +1858,9 @@ void handleStatus() {
   ring["brightness"] =
     ledState.brightness;
 
+  ring["userBrightnessPercent"] =
+    userBrightnessPercent;
+
   ring["r"] =
     ledState.color.r;
 
@@ -1854,11 +1921,41 @@ void handleStatus() {
 }
 
 // ============================================================
+// API - FORECAST
+// ============================================================
+
+void handleForecast() {
+  JsonDocument doc;
+  doc["valid"] = forecastValid;
+  doc["count"] = FORECAST_DAY_COUNT;
+
+  JsonArray days = doc["days"].to<JsonArray>();
+
+  for (int i = 0; i < FORECAST_DAY_COUNT; i++) {
+    JsonObject item = days.add<JsonObject>();
+    item["offset"] = i;
+    item["date"] = forecastDays[i].date;
+    item["valid"] = forecastDays[i].valid;
+    item["weather"] = weatherToString(forecastDays[i].weather);
+    item["weatherCode"] = forecastDays[i].weatherCode;
+    item["temperatureMax"] = forecastDays[i].temperatureMax;
+    item["temperatureMin"] = forecastDays[i].temperatureMin;
+  }
+
+  String response;
+  serializeJsonPretty(doc, response);
+  server.send(200, "application/json", response);
+}
+
+// ============================================================
 // API - CONFIG
 // ============================================================
 
 void handleConfig() {
   JsonDocument doc;
+
+  doc["location"] =
+    LOCATION_NAME;
 
   doc["latitude"] =
     LATITUDE;
@@ -2219,6 +2316,66 @@ void handleMockOff() {
 }
 
 // ============================================================
+// API - BRIGHTNESS
+// ============================================================
+
+void handleBrightness() {
+  if (server.hasArg("value")) {
+    setMqttBrightnessPercent(
+      server.arg("value").toInt()
+    );
+  } else if (server.hasArg("action")) {
+    String action =
+      server.arg("action");
+
+    action.trim();
+    action.toLowerCase();
+
+    if (
+      action == "up" ||
+      action == "increase" ||
+      action == "+"
+    ) {
+      setMqttBrightnessPercent(
+        min(
+          100,
+          (int)userBrightnessPercent + 10
+        )
+      );
+    } else if (
+      action == "down" ||
+      action == "decrease" ||
+      action == "-"
+    ) {
+      setMqttBrightnessPercent(
+        max(
+          0,
+          (int)userBrightnessPercent - 10
+        )
+      );
+    }
+  }
+
+  JsonDocument doc;
+
+  doc["brightnessPercent"] =
+    userBrightnessPercent;
+
+  String response;
+
+  serializeJsonPretty(
+    doc,
+    response
+  );
+
+  server.send(
+    200,
+    "application/json",
+    response
+  );
+}
+
+// ============================================================
 // API - ROOT
 // ============================================================
 
@@ -2229,6 +2386,13 @@ void handleRoot() {
     "STATUS\n"
     "GET /api/status\n"
     "GET /api/config\n"
+    "GET /api/forecast\n"
+    "\n"
+    "BRIGHTNESS\n"
+    "GET /api/brightness\n"
+    "GET /api/brightness?action=up\n"
+    "GET /api/brightness?action=down\n"
+    "GET /api/brightness?value=100\n"
     "\n"
     "WEATHER MOCKS\n"
     "GET /api/mock?weather=clear\n"
@@ -2304,6 +2468,18 @@ void setupServer() {
   );
 
   server.on(
+    "/api/forecast",
+    HTTP_GET,
+    handleForecast
+  );
+
+  server.on(
+    "/api/forecast/",
+    HTTP_GET,
+    handleForecast
+  );
+
+  server.on(
     "/api/config",
     HTTP_GET,
     handleConfig
@@ -2313,6 +2489,18 @@ void setupServer() {
     "/api/config/",
     HTTP_GET,
     handleConfig
+  );
+
+  server.on(
+    "/api/brightness",
+    HTTP_GET,
+    handleBrightness
+  );
+
+  server.on(
+    "/api/brightness/",
+    HTTP_GET,
+    handleBrightness
   );
 
   server.on(
@@ -2388,8 +2576,18 @@ void setupServer() {
         return;
       }
 
+      if (uri == "/api/forecast") {
+        handleForecast();
+        return;
+      }
+
       if (uri == "/api/config") {
         handleConfig();
+        return;
+      }
+
+      if (uri == "/api/brightness") {
+        handleBrightness();
         return;
       }
 
@@ -2436,6 +2634,9 @@ void setupServer() {
 
   Serial.println(
     "API status: /api/status"
+  );
+  Serial.println(
+    "API forecast: /api/forecast"
   );
 }
 

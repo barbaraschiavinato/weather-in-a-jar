@@ -1,7 +1,7 @@
 substitutions:
   name: weather-panel
   friendly_name: Weather panel
-  jar_host: "192.168.1.XXX"
+  jar_host: !secret weather_jar_ip
 
 esphome:
   name: ${name}
@@ -9,8 +9,10 @@ esphome:
   on_boot:
     priority: -100
     then:
-      - delay: 3s
-      - script.execute: refresh_jar_config
+      # Draw the UI first, then let Wi-Fi settle. Network data loading is
+      # orchestrated by initial_load so status/forecast never start together.
+      - delay: 1s
+      - script.execute: initial_load
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -23,10 +25,11 @@ psram:
   speed: 80MHz
 
 logger:
+  level: DEBUG
 
 api:
   encryption:
-    key: "PASTE_YOUR_EXISTING_API_KEY_HERE"
+    key: !secret weather_panel_api_key
 
 ota:
   - platform: esphome
@@ -34,12 +37,87 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
-    ssid: "Weather-Panel Fallback"
-    password: "PASTE_YOUR_EXISTING_FALLBACK_PASSWORD_HERE"
+  reboot_timeout: 0s
+  on_connect:
+    then:
+      - logger.log:
+          level: INFO
+          tag: wifi_debug
+          format: "Wi-Fi CONNECTED - waiting for network details..."
+      # initial_load owns the first network refresh. This avoids a second
+      # pair of requests racing the on_boot sequence.
+      - if:
+          condition:
+            lambda: 'return !id(initial_load_done) && !id(initial_load_running);'
+          then:
+            - script.execute: initial_load
+  on_disconnect:
+    then:
+      - logger.log:
+          level: WARN
+          tag: wifi_debug
+          format: "Wi-Fi DISCONNECTED"
 
-captive_portal:
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "Weather Panel IP"
+      id: panel_ip
+      internal: true
+      on_value:
+        then:
+          - logger.log:
+              level: INFO
+              tag: wifi_debug
+              format: "IP address: %s"
+              args: ['x.c_str()']
+    ssid:
+      name: "Weather Panel SSID"
+      id: panel_ssid
+      internal: true
+      on_value:
+        then:
+          - logger.log:
+              level: INFO
+              tag: wifi_debug
+              format: "Connected SSID: %s"
+              args: ['x.c_str()']
+    bssid:
+      name: "Weather Panel BSSID"
+      id: panel_bssid
+      internal: true
+      on_value:
+        then:
+          - logger.log:
+              level: INFO
+              tag: wifi_debug
+              format: "Access point BSSID: %s"
+              args: ['x.c_str()']
+    mac_address:
+      name: "Weather Panel MAC"
+      id: panel_mac
+      internal: true
+      on_value:
+        then:
+          - logger.log:
+              level: INFO
+              tag: wifi_debug
+              format: "Panel MAC: %s"
+              args: ['x.c_str()']
 
+sensor:
+  - platform: wifi_signal
+    name: "Weather Panel WiFi Signal"
+    id: panel_wifi_signal
+    internal: true
+    update_interval: 30s
+    on_value:
+      then:
+        - logger.log:
+            level: DEBUG
+            tag: wifi_debug
+            format: "Wi-Fi signal: %.0f dBm"
+            args: ['x']
 http_request:
   id: http_client
   timeout: 10s
@@ -115,43 +193,39 @@ font:
   - file:
       url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
       type: web
-    id: mdi_28
-    size: 28
-    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599","\U000F0156"]
+    id: mdi_icons_24
+    size: 24
+    glyphs: [
+      "\U000F0595",  # Partly Cloudy
+      "\U000F0156",  # Close
+      "\U000F0599",  # Sunny
+      "\U000F0590",  # Cloudy
+      "\U000F0591",  # Foggy
+      "\U000F0597",  # Rainy
+      "\U000F0598",  # Snowy
+      "\U000F0593",  # Lightning
+      "\U000F0594",  # Clear night
+    ]
   - file:
       url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
       type: web
-    id: mdi_44
-    size: 44
-    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599"]
-  - file:
-      url: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
-      type: web
-    id: mdi_82
-    size: 82
-    glyphs: ["\U000F0590","\U000F0591","\U000F0593","\U000F0594","\U000F0595","\U000F0596","\U000F0597","\U000F0598","\U000F0599"]
-
-number:
-  - platform: homeassistant
-    id: jar_brightness
-    entity_id: number.living_room_weather_jar_brightness
-    internal: true
-    on_value:
-      - lvgl.label.update:
-          id: brightness_value
-          text:
-            format: "%.0f%%"
-            args: [x]
+    id: mdi_icons_64
+    size: 64
+    glyphs: [
+      "\U000F0595",
+      "\U000F0599",
+      "\U000F0590",
+      "\U000F0591",
+      "\U000F0597",
+      "\U000F0598",
+      "\U000F0593",
+      "\U000F0594",
+    ]
 
 globals:
-  - id: jar_latitude
-    type: float
-    restore_value: yes
-    initial_value: '0.0'
-  - id: jar_longitude
-    type: float
-    restore_value: yes
-    initial_value: '0.0'
+  - id: forecast_mode_0
+    type: std::string
+    initial_value: '"partly_cloudy"'
   - id: forecast_mode_1
     type: std::string
     initial_value: '"partly_cloudy"'
@@ -164,136 +238,601 @@ globals:
   - id: forecast_mode_4
     type: std::string
     initial_value: '"partly_cloudy"'
+  - id: forecast_day_0
+    type: std::string
+    initial_value: '"TODAY"'
+  - id: forecast_day_1
+    type: std::string
+    initial_value: '"—"'
+  - id: forecast_day_2
+    type: std::string
+    initial_value: '"—"'
+  - id: forecast_day_3
+    type: std::string
+    initial_value: '"—"'
+  - id: forecast_day_4
+    type: std::string
+    initial_value: '"—"'
+  - id: forecast_max_0
+    type: float
+    initial_value: '0.0'
+  - id: forecast_max_1
+    type: float
+    initial_value: '0.0'
+  - id: forecast_max_2
+    type: float
+    initial_value: '0.0'
+  - id: forecast_max_3
+    type: float
+    initial_value: '0.0'
+  - id: forecast_max_4
+    type: float
+    initial_value: '0.0'
+  - id: forecast_min_0
+    type: float
+    initial_value: '0.0'
+  - id: forecast_min_1
+    type: float
+    initial_value: '0.0'
+  - id: forecast_min_2
+    type: float
+    initial_value: '0.0'
+  - id: forecast_min_3
+    type: float
+    initial_value: '0.0'
+  - id: forecast_min_4
+    type: float
+    initial_value: '0.0'
+  - id: initial_load_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: initial_load_done
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: status_loading
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: forecast_loading
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: selected_forecast_offset
+    type: int
+    restore_value: no
+    initial_value: '-1'
 
 script:
-  - id: refresh_jar_config
-    mode: restart
+  - id: initial_load
+    mode: single
     then:
-      - http_request.get:
-          url: "http://${jar_host}/api/config"
-          capture_response: true
-          max_response_buffer_size: 4096
-          on_response:
-            then:
-              - lambda: |-
-                  if (response->status_code == 200) {
-                    json::parse_json(body, [](JsonObject root) -> bool {
-                      if (root["latitude"].isNull() || root["longitude"].isNull()) return false;
-                      id(jar_latitude) = root["latitude"].as<float>();
-                      id(jar_longitude) = root["longitude"].as<float>();
-                      return true;
-                    });
-                  }
-              - script.execute: refresh_weather
-          on_error:
-            then:
-              - script.execute: refresh_weather
+      - if:
+          condition:
+            lambda: 'return !id(initial_load_done) && !id(initial_load_running);'
+          then:
+            - lambda: |-
+                id(initial_load_running) = true;
+                id(status_loading) = true;
+                id(forecast_loading) = true;
+            - script.execute: update_loading_spinner
+            # Give LVGL/display/PSRAM time to finish their first draw before
+            # doing HTTP + JSON work.
+            - delay: 1500ms
+            - wait_until:
+                condition:
+                  wifi.connected:
+                timeout: 15s
+            - if:
+                condition:
+                  wifi.connected:
+                then:
+                  # Status first.
+                  - script.execute: refresh_jar_status
+                  - script.wait: refresh_jar_status
+                  - delay: 300ms
+                  # Forecast second.
+                  - script.execute: refresh_jar_forecast
+                  - script.wait: refresh_jar_forecast
+                else:
+                  - logger.log:
+                      level: WARN
+                      tag: startup
+                      format: "Initial load timed out waiting for Wi-Fi"
+            - lambda: |-
+                id(initial_load_running) = false;
+                id(initial_load_done) = true;
+                id(status_loading) = false;
+                id(forecast_loading) = false;
+            - script.execute: update_loading_spinner
 
-  - id: refresh_weather
+  - id: update_loading_spinner
     mode: restart
     then:
       - if:
           condition:
-            lambda: return fabsf(id(jar_latitude)) > 0.1f || fabsf(id(jar_longitude)) > 0.1f;
+            lambda: 'return id(status_loading) || id(forecast_loading);'
           then:
-            - http_request.get:
-                url: !lambda |-
-                  char u[900];
-                  snprintf(u,sizeof(u),
-                    "https://api.open-meteo.com/v1/forecast?latitude=%.6f&longitude=%.6f&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto&forecast_days=5",
-                    id(jar_latitude),id(jar_longitude));
-                  return std::string(u);
-                capture_response: true
-                max_response_buffer_size: 16384
-                on_response:
-                  then:
-                    - lambda: |-
-                        if (response->status_code != 200) return;
-                        auto icon=[](int c,bool day)->const char*{
-                          if(!day&&(c==0||c==1))return "\U000F0594";
-                          if(c==0)return "\U000F0599"; if(c<=2)return "\U000F0595";
-                          if(c==3)return "\U000F0590"; if(c==45||c==48)return "\U000F0591";
-                          if(c>=51&&c<=57)return "\U000F0597";
-                          if((c>=61&&c<=67)||(c>=80&&c<=82))return (c==65||c==67||c==82)?"\U000F0596":"\U000F0597";
-                          if((c>=71&&c<=77)||c==85||c==86)return "\U000F0598";
-                          if(c>=95)return "\U000F0593"; return "\U000F0590";
-                        };
-                        auto desc=[](int c)->const char*{
-                          if(c==0)return "CLEAR"; if(c==1)return "MAINLY CLEAR"; if(c==2)return "PARTLY CLOUDY";
-                          if(c==3)return "OVERCAST"; if(c==45||c==48)return "FOG"; if(c>=51&&c<=57)return "DRIZZLE";
-                          if((c>=61&&c<=67)||(c>=80&&c<=82))return "RAIN";
-                          if((c>=71&&c<=77)||c==85||c==86)return "SNOW"; if(c>=95)return "THUNDERSTORM"; return "UNKNOWN";
-                        };
-                        auto mode=[](int c)->std::string{
-                          if(c==0)return "clear"; if(c==1)return "mainly_clear"; if(c==2)return "partly_cloudy";
-                          if(c==3)return "overcast"; if(c==45||c==48)return "fog"; if(c>=51&&c<=57)return "drizzle";
-                          if((c>=61&&c<=67)||(c>=80&&c<=82))return "rain";
-                          if((c>=71&&c<=77)||c==85||c==86)return "snow"; if(c>=95)return "storm"; return "overcast";
-                        };
-                        auto wd=[](const char*s)->std::string{
-                          int y,m,d;if(sscanf(s,"%d-%d-%d",&y,&m,&d)!=3)return "---";
-                          if(m<3){m+=12;y--;}int k=y%100,j=y/100,h=(d+(13*(m+1))/5+k+k/4+j/4+5*j)%7;
-                          static const char* n[]={"SAT","SUN","MON","TUE","WED","THU","FRI"};return n[h];
-                        };
-                        json::parse_json(body,[&](JsonObject root)->bool{
-                          JsonObject c=root["current"],d=root["daily"]; if(c.isNull()||d.isNull())return false;
-                          int code=c["weather_code"]|-1; bool day=(c["is_day"]|1)==1;
-                          lv_label_set_text(id(current_weather_icon),icon(code,day));
-                          char b[96];snprintf(b,sizeof(b),"%.0f°",c["temperature_2m"].as<float>());lv_label_set_text(id(current_temperature),b);
-                          lv_label_set_text(id(current_condition),desc(code));
-                          snprintf(b,sizeof(b),"Humidity %.0f%%   •   Wind %.0f km/h",c["relative_humidity_2m"].as<float>(),c["wind_speed_10m"].as<float>());
-                          lv_label_set_text(id(current_details),b);
-                          JsonArray dates=d["time"],codes=d["weather_code"],hi=d["temperature_2m_max"],lo=d["temperature_2m_min"];
-                          if(dates.size()<5)return false;
-                          lv_obj_t* dl[]={id(day0_label),id(day1_label),id(day2_label),id(day3_label),id(day4_label)};
-                          lv_obj_t* ic[]={id(day0_icon),id(day1_icon),id(day2_icon),id(day3_icon),id(day4_icon)};
-                          lv_obj_t* tp[]={id(day0_temp),id(day1_temp),id(day2_temp),id(day3_temp),id(day4_temp)};
-                          for(int i=0;i<5;i++){int x=codes[i].as<int>();std::string s=i?"": "TODAY";if(i)s=wd(dates[i].as<const char*>());lv_label_set_text(dl[i],s.c_str());lv_label_set_text(ic[i],icon(x,true));snprintf(b,sizeof(b),"%.0f° / %.0f°",lo[i].as<float>(),hi[i].as<float>());lv_label_set_text(tp[i],b);}
-                          id(forecast_mode_1)=mode(codes[1]);id(forecast_mode_2)=mode(codes[2]);id(forecast_mode_3)=mode(codes[3]);id(forecast_mode_4)=mode(codes[4]);return true;
-                        });
+            - lvgl.widget.show: loading_spinner
+          else:
+            - lvgl.widget.hide: loading_spinner
+
+  - id: refresh_jar_status
+    mode: restart
+    then:
+      - lambda: 'id(status_loading) = true;'
+      - script.execute: update_loading_spinner
+      - logger.log:
+          level: INFO
+          tag: jar_debug
+          format: "Requesting Jar: http://${jar_host}/api/status"
+      - http_request.get:
+          url: "http://${jar_host}/api/status"
+          capture_response: true
+          max_response_buffer_size: 8192
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("jar_debug", "Jar responded - HTTP %d, body length: %u bytes", response->status_code, (unsigned) body.size());
+                  if (response->status_code != 200) {
+                    ESP_LOGE("jar_debug", "Jar HTTP error: %d", response->status_code);
+                    char b[48];
+                    snprintf(b, sizeof(b), "JAR HTTP %d", response->status_code);
+                    lv_label_set_text(id(current_condition), b);
+                    return;
+                  }
+
+                  bool ok = json::parse_json(body, [&](JsonObject root) -> bool {
+                    if (root["weather"].isNull() || root["temperature"].isNull()) return false;
+
+                    const char *weather = root["weather"] | "unknown";
+                    const char *period = root["period"] | "day";
+                    const char *source = root["source"] | "unknown";
+                    float temperature = root["temperature"] | 0.0f;
+                    float precipitation = root["precipitation"] | 0.0f;
+                    float rain = root["rain"] | 0.0f;
+                    const char *location = root["location"] | "—";
+                    int brightness_percent = root["brightnessPercent"] | 0;
+
+                    lv_label_set_text(id(location_value), location);
+
+                    char brightness_text[16];
+                    snprintf(brightness_text, sizeof(brightness_text), "%d%%", brightness_percent);
+                    lv_label_set_text(id(brightness_value), brightness_text);
+
+                    ESP_LOGI(
+                      "jar_debug",
+                      "Jar JSON OK - weather=%s temperature=%.1f period=%s source=%s precip=%.1f rain=%.1f",
+                      weather, temperature, period, source, precipitation, rain
+                    );
+
+                    const bool night = strcmp(period, "night") == 0;
+                    const char *icon = "\U000F0590";
+                    const char *label = "UNKNOWN";
+
+                    if (strcmp(weather, "clear") == 0) {
+                      icon = night ? "\U000F0594" : "\U000F0599";
+                      label = "CLEAR";
+                    } else if (strcmp(weather, "mainly_clear") == 0) {
+                      icon = night ? "\U000F0594" : "\U000F0595";
+                      label = "MAINLY CLEAR";
+                    } else if (strcmp(weather, "partly_cloudy") == 0) {
+                      icon = "\U000F0595";
+                      label = "PARTLY CLOUDY";
+                    } else if (strcmp(weather, "overcast") == 0) {
+                      icon = "\U000F0590";
+                      label = "OVERCAST";
+                    } else if (strcmp(weather, "fog") == 0) {
+                      icon = "\U000F0591";
+                      label = "FOG";
+                    } else if (strcmp(weather, "drizzle") == 0) {
+                      icon = "\U000F0597";
+                      label = "DRIZZLE";
+                    } else if (strcmp(weather, "rain") == 0) {
+                      icon = "\U000F0597";
+                      label = "RAIN";
+                    } else if (strcmp(weather, "snow") == 0) {
+                      icon = "\U000F0598";
+                      label = "SNOW";
+                    } else if (strcmp(weather, "thunderstorm") == 0 || strcmp(weather, "storm") == 0) {
+                      icon = "\U000F0593";
+                      label = "THUNDERSTORM";
+                    }
+
+                    if (id(selected_forecast_offset) < 0) {
+                      lv_label_set_text(id(current_weather_icon), icon);
+
+                      char b[96];
+                      snprintf(b, sizeof(b), "%.1f°", temperature);
+                      lv_label_set_text(id(current_temperature), b);
+                      lv_label_set_text(id(current_condition), label);
+
+                      snprintf(
+                        b, sizeof(b),
+                        "%s  •  %s\nPrecip. %.1f mm  •  Rain %.1f mm",
+                        period, source, precipitation, rain
+                      );
+                      lv_label_set_text(id(current_details), b);
+                    }
+
+                    return true;
+                  });
+
+                  if (!ok) {
+                    ESP_LOGE("jar_debug", "Jar response received but JSON is invalid or required fields are missing");
+                    ESP_LOGD("jar_debug", "Raw Jar response: %s", body.c_str());
+                    lv_label_set_text(id(current_condition), "JAR JSON ERROR");
+                  }
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: jar_debug
+                  format: "JAR CONNECTION ERROR - transport request to http://${jar_host}/api/status failed"
+              - lvgl.label.update:
+                  id: current_condition
+                  text: "JAR CONNECTION ERROR"
+      - lambda: 'id(status_loading) = false;'
+      - script.execute: update_loading_spinner
+
+  - id: refresh_jar_forecast
+    mode: restart
+    then:
+      - lambda: 'id(forecast_loading) = true;'
+      - script.execute: update_loading_spinner
+      - logger.log:
+          level: INFO
+          tag: forecast_debug
+          format: "Requesting forecast: http://${jar_host}/api/forecast"
+      - http_request.get:
+          url: "http://${jar_host}/api/forecast"
+          capture_response: true
+          max_response_buffer_size: 12288
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("forecast_debug", "Forecast response HTTP %d, %u bytes", response->status_code, (unsigned) body.size());
+                  if (response->status_code != 200) {
+                    ESP_LOGE("forecast_debug", "Forecast HTTP error: %d", response->status_code);
+                    return;
+                  }
+
+                  bool ok = json::parse_json(body, [&](JsonObject root) -> bool {
+                    if (!(root["valid"] | false) || root["days"].isNull()) return false;
+
+                    JsonArray days = root["days"].as<JsonArray>();
+                    if (days.size() < 5) return false;
+
+                    lv_obj_t *labels[5] = {id(day0_label), id(day1_label), id(day2_label), id(day3_label), id(day4_label)};
+                    lv_obj_t *icons[5]  = {id(day0_icon),  id(day1_icon),  id(day2_icon),  id(day3_icon),  id(day4_icon)};
+                    lv_obj_t *temps[5]  = {id(day0_temp),  id(day1_temp),  id(day2_temp),  id(day3_temp),  id(day4_temp)};
+
+                    for (int i = 0; i < 5; i++) {
+                      JsonObject d = days[i];
+                      if (!(d["valid"] | false)) continue;
+
+                      const char *date = d["date"] | "";
+                      const char *weather = d["weather"] | "unknown";
+                      float tmax = d["temperatureMax"] | 0.0f;
+                      float tmin = d["temperatureMin"] | 0.0f;
+
+                      if (i == 0) {
+                        id(forecast_mode_0) = weather;
+                        id(forecast_day_0) = "TODAY";
+                        id(forecast_max_0) = tmax;
+                        id(forecast_min_0) = tmin;
+                      } else if (i == 1) {
+                        id(forecast_mode_1) = weather;
+                        id(forecast_max_1) = tmax;
+                        id(forecast_min_1) = tmin;
+                      } else if (i == 2) {
+                        id(forecast_mode_2) = weather;
+                        id(forecast_max_2) = tmax;
+                        id(forecast_min_2) = tmin;
+                      } else if (i == 3) {
+                        id(forecast_mode_3) = weather;
+                        id(forecast_max_3) = tmax;
+                        id(forecast_min_3) = tmin;
+                      } else if (i == 4) {
+                        id(forecast_mode_4) = weather;
+                        id(forecast_max_4) = tmax;
+                        id(forecast_min_4) = tmin;
+                      }
+
+                      const char *icon = "\U000F0590";
+                      if (strcmp(weather, "clear") == 0) icon = "\U000F0599";
+                      else if (strcmp(weather, "mainly_clear") == 0) icon = "\U000F0595";
+                      else if (strcmp(weather, "partly_cloudy") == 0) icon = "\U000F0595";
+                      else if (strcmp(weather, "overcast") == 0) icon = "\U000F0590";
+                      else if (strcmp(weather, "fog") == 0) icon = "\U000F0591";
+                      else if (strcmp(weather, "drizzle") == 0) icon = "\U000F0597";
+                      else if (strcmp(weather, "rain") == 0) icon = "\U000F0597";
+                      else if (strcmp(weather, "snow") == 0) icon = "\U000F0598";
+                      else if (strcmp(weather, "thunderstorm") == 0 || strcmp(weather, "storm") == 0) icon = "\U000F0593";
+
+                      lv_label_set_text(icons[i], icon);
+
+                      char temp[40];
+                      snprintf(temp, sizeof(temp), "%.1f° / %.1f°", tmax, tmin);
+                      lv_label_set_text(temps[i], temp);
+
+                      if (i == 0) {
+                        lv_label_set_text(labels[i], "TODAY");
+                      } else {
+                        int y = 0, m = 0, day = 0;
+                        char day_name[16] = "—";
+                        if (sscanf(date, "%d-%d-%d", &y, &m, &day) == 3) {
+                          struct tm tmv = {};
+                          tmv.tm_year = y - 1900;
+                          tmv.tm_mon = m - 1;
+                          tmv.tm_mday = day;
+                          tmv.tm_hour = 12;
+                          tmv.tm_isdst = -1;
+                          if (mktime(&tmv) != (time_t)-1) {
+                            char full_day_name[20] = "—";
+                            strftime(day_name, sizeof(day_name), "%a", &tmv);
+                            strftime(full_day_name, sizeof(full_day_name), "%A", &tmv);
+                            for (char *c = day_name; *c; ++c) *c = toupper((unsigned char)*c);
+                            for (char *c = full_day_name; *c; ++c) *c = toupper((unsigned char)*c);
+                            if (i == 1) id(forecast_day_1) = full_day_name;
+                            else if (i == 2) id(forecast_day_2) = full_day_name;
+                            else if (i == 3) id(forecast_day_3) = full_day_name;
+                            else if (i == 4) id(forecast_day_4) = full_day_name;
+                          }
+                        }
+                        lv_label_set_text(labels[i], day_name);
+                      }
+
+                      ESP_LOGI("forecast_debug", "Day %d: %s %s %.1f/%.1f", i, date, weather, tmax, tmin);
+                    }
+                    return true;
+                  });
+
+                  if (!ok) {
+                    ESP_LOGE("forecast_debug", "Forecast JSON invalid or incomplete");
+                    ESP_LOGD("forecast_debug", "Raw forecast response: %s", body.c_str());
+                  }
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: forecast_debug
+                  format: "FORECAST CONNECTION ERROR"
+      - lambda: 'id(forecast_loading) = false;'
+      - script.execute: update_loading_spinner
 
   - id: live
+    mode: restart
     then:
-      - homeassistant.action:
-          action: select.select_option
-          data: {entity_id: select.living_room_weather_jar_mode, option: auto}
+      - lambda: 'id(selected_forecast_offset) = -1;'
+      - logger.log:
+          level: INFO
+          tag: jar_control
+          format: "LIVE -> GET http://${jar_host}/api/mock/off"
+      - http_request.get:
+          url: "http://${jar_host}/api/mock/off"
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("jar_control", "LIVE response HTTP %d: %s", response->status_code, body.c_str());
+              - delay: 250ms
+              - script.execute: refresh_jar_status
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: jar_control
+                  format: "LIVE request failed"
 
   - id: mock
-    parameters: {mode: string}
+    mode: restart
+    parameters:
+      mode: string
     then:
-      - homeassistant.action:
-          action: select.select_option
-          data:
-            entity_id: select.living_room_weather_jar_mode
-            option: !lambda return mode;
+      - lambda: 'id(selected_forecast_offset) = -1;'
+      - logger.log:
+          level: INFO
+          tag: jar_control
+          format: "MOCK requested: %s"
+          args: ['mode.c_str()']
+      - http_request.get:
+          url: !lambda |-
+            std::string base = "http://${jar_host}";
+            if (mode == "loop") return base + "/api/mock/loop";
+            if (mode == "sunrise") return base + "/api/mock?period=sunrise";
+            if (mode == "sunset") return base + "/api/mock?period=sunset";
+            if (mode == "storm") return base + "/api/mock?weather=thunderstorm";
+            return base + "/api/mock?weather=" + mode;
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("jar_control", "MOCK response HTTP %d: %s", response->status_code, body.c_str());
+              - delay: 250ms
+              - script.execute: refresh_jar_status
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: jar_control
+                  format: "MOCK request failed"
+
+  - id: brightness_down
+    mode: restart
+    then:
+      - http_request.get:
+          url: "http://${jar_host}/api/brightness?action=down"
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("brightness_control", "Brightness DOWN HTTP %d: %s", response->status_code, body.c_str());
+              - delay: 150ms
+              - script.execute: refresh_jar_status
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: brightness_control
+                  format: "Brightness DOWN request failed"
+
+  - id: brightness_up
+    mode: restart
+    then:
+      - http_request.get:
+          url: "http://${jar_host}/api/brightness?action=up"
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("brightness_control", "Brightness UP HTTP %d: %s", response->status_code, body.c_str());
+              - delay: 150ms
+              - script.execute: refresh_jar_status
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: brightness_control
+                  format: "Brightness UP request failed"
 
   - id: forecast
-    parameters: {offset: int, weather: string}
+    mode: restart
+    parameters:
+      offset: int
+      weather: string
     then:
-      - homeassistant.action:
-          action: mqtt.publish
-          data:
-            topic: weatherjar/set/forecast
-            payload: !lambda |-
-              char b[100];snprintf(b,sizeof(b),"{\"offset\":%d,\"weather\":\"%s\"}",offset,weather.c_str());return std::string(b);
+      - lambda: 'id(selected_forecast_offset) = offset;'
+      - logger.log:
+          level: INFO
+          tag: forecast_control
+          format: "FORECAST day +%d -> %s"
+          args: ['offset', 'weather.c_str()']
+      - http_request.get:
+          url: !lambda |-
+            return std::string("http://${jar_host}/api/mock?weather=") + weather;
+          capture_response: true
+          max_response_buffer_size: 2048
+          on_response:
+            then:
+              - lambda: |-
+                  ESP_LOGI("forecast_control", "Forecast selection HTTP %d: %s", response->status_code, body.c_str());
+                  if (response->status_code != 200) return;
+
+                  std::string day_name = "FORECAST";
+                  float tmax = 0.0f;
+                  float tmin = 0.0f;
+
+                  if (offset == 0) { day_name = id(forecast_day_0); tmax = id(forecast_max_0); tmin = id(forecast_min_0); }
+                  else if (offset == 1) { day_name = id(forecast_day_1); tmax = id(forecast_max_1); tmin = id(forecast_min_1); }
+                  else if (offset == 2) { day_name = id(forecast_day_2); tmax = id(forecast_max_2); tmin = id(forecast_min_2); }
+                  else if (offset == 3) { day_name = id(forecast_day_3); tmax = id(forecast_max_3); tmin = id(forecast_min_3); }
+                  else if (offset == 4) { day_name = id(forecast_day_4); tmax = id(forecast_max_4); tmin = id(forecast_min_4); }
+
+                  const char *icon = "\U000F0590";
+                  const char *label = "UNKNOWN";
+                  if (weather == "clear") { icon = "\U000F0599"; label = "CLEAR"; }
+                  else if (weather == "mainly_clear") { icon = "\U000F0595"; label = "MAINLY CLEAR"; }
+                  else if (weather == "partly_cloudy") { icon = "\U000F0595"; label = "PARTLY CLOUDY"; }
+                  else if (weather == "overcast") { icon = "\U000F0590"; label = "OVERCAST"; }
+                  else if (weather == "fog") { icon = "\U000F0591"; label = "FOG"; }
+                  else if (weather == "drizzle") { icon = "\U000F0597"; label = "DRIZZLE"; }
+                  else if (weather == "rain") { icon = "\U000F0597"; label = "RAIN"; }
+                  else if (weather == "snow") { icon = "\U000F0598"; label = "SNOW"; }
+                  else if (weather == "thunderstorm" || weather == "storm") { icon = "\U000F0593"; label = "THUNDERSTORM"; }
+
+                  lv_label_set_text(id(current_weather_icon), icon);
+                  lv_label_set_text(id(current_condition), label);
+
+                  char b[96];
+                  snprintf(b, sizeof(b), "%.1f° / %.1f°", tmax, tmin);
+                  lv_label_set_text(id(current_temperature), b);
+
+                  snprintf(b, sizeof(b), "%s  •  FORECAST", day_name.c_str());
+                  lv_label_set_text(id(current_details), b);
+          on_error:
+            then:
+              - logger.log:
+                  level: ERROR
+                  tag: forecast_control
+                  format: "Forecast selection request failed"
 
 interval:
+  - interval: 30s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(initial_load_done) && !id(initial_load_running);'
+          then:
+            - script.execute: refresh_jar_status
   - interval: 15min
-    then: [script.execute: refresh_weather]
-  - interval: 1h
-    then: [script.execute: refresh_jar_config]
+    then:
+      - if:
+          condition:
+            lambda: 'return id(initial_load_done) && !id(initial_load_running);'
+          then:
+            - script.execute: refresh_jar_forecast
 
 lvgl:
   displays: [main_display]
   touchscreens: [main_touch]
   buffer_size: 25%
   pages:
-    - id: weather_page
+    - id: canvas_1
       bg_color: 0xFFFFFF
+      pad_all: 0
+      scrollbar_mode: "OFF"
       widgets:
-        - label: {x: 30, y: 18, text: "WEATHER", text_font: font_22, text_color: 0x171A1F}
-        - label: {x: 30, y: 47, text: "Weather Jar", text_font: font_14, text_color: 0x7A8088}
+        - label:
+            id: lv_label_0
+            x: 30
+            y: 18
+            text: "WEATHER"
+            text_color: 0x171A1F
+            text_font: font_22
+
+        - label:
+            id: lv_label_1
+            x: 30
+            y: 47
+            text: "Weather Jar"
+            text_color: 0x7A8088
+            text_font: font_14
+
+        - label:
+            id: location_value
+            x: 555
+            y: 22
+            width: 170
+            text: "—"
+            text_color: 0x626870
+            text_align: RIGHT
+            text_font: font_14
+
+        # Fixed-position network activity indicator. It is a direct child of
+        # the page, so showing/hiding it never changes the layout below.
+        - spinner:
+            id: loading_spinner
+            x: 742
+            y: 20
+            width: 26
+            height: 26
+            hidden: true
+            spin_time: 900ms
+            arc_length: 75deg
+            arc_width: 3
+            arc_color: 0xD8DDE3
+            indicator:
+              arc_color: 0x3D78C5
+              arc_width: 3
+
         - obj:
+            id: lv_obj_2
             x: 30
             y: 82
             width: 740
@@ -301,13 +840,45 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 18
+            pad_all: 0
             widgets:
-              - label: {id: current_weather_icon, x: 25, y: 28, width: 105, text: "\U000F0595", text_font: mdi_82, text_color: 0x3D78C5, text_align: CENTER}
-              - label: {id: current_temperature, x: 155, y: 23, text: "--°", text_font: font_52, text_color: 0x171A1F}
-              - label: {id: current_condition, x: 158, y: 89, text: "LOADING...", text_font: font_18, text_color: 0x171A1F}
-              - label: {id: current_details, x: 425, y: 63, width: 285, text: "Humidity --%   •   Wind -- km/h", text_font: font_16, text_color: 0x626870, text_align: RIGHT}
+              - label:
+                  id: current_weather_icon
+                  x: 25
+                  y: 37
+                  width: 105
+                  height: 80
+                  text: "\U000F0595"
+                  text_font: mdi_icons_64
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: current_temperature
+                  x: 155
+                  y: 23
+                  text: "--°"
+                  text_color: 0x171A1F
+                  text_font: font_52
+              - label:
+                  id: current_condition
+                  x: 158
+                  y: 89
+                  text: "LOADING..."
+                  text_color: 0x171A1F
+                  text_font: font_18
+              - label:
+                  id: current_details
+                  x: 395
+                  y: 49
+                  width: 315
+                  height: 62
+                  text: "LIVE"
+                  text_color: 0x626870
+                  text_align: RIGHT
+                  text_font: font_16
 
         - button:
+            id: lv_button_3
             x: 30
             y: 253
             width: 136
@@ -315,13 +886,43 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 16
-            on_click: [script.execute: live]
+            pad_all: 0
+            on_click:
+              - script.execute:
+                  id: forecast
+                  offset: 0
+                  weather: !lambda return id(forecast_mode_0);
             widgets:
-              - label: {id: day0_label, y: 10, width: 136, text: "TODAY", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
-              - label: {id: day0_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
-              - label: {id: day0_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label:
+                  id: day0_label
+                  x: 0
+                  y: 10
+                  width: 136
+                  text: "TODAY"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
+              - label:
+                  id: day0_icon
+                  x: 0
+                  y: 39
+                  width: 136
+                  text: "\U000F0595"
+                  text_font: mdi_icons_24
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: day0_temp
+                  x: 0
+                  y: 96
+                  width: 136
+                  text: "--° / --°"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
 
         - button:
+            id: lv_button_4
             x: 181
             y: 253
             width: 136
@@ -329,14 +930,43 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 16
+            pad_all: 0
             on_click:
-              - script.execute: {id: forecast, offset: 1, weather: !lambda "return id(forecast_mode_1);"}
+              - script.execute:
+                  id: forecast
+                  offset: 1
+                  weather: !lambda return id(forecast_mode_1);
             widgets:
-              - label: {id: day1_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
-              - label: {id: day1_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
-              - label: {id: day1_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label:
+                  id: day1_label
+                  x: 0
+                  y: 10
+                  width: 136
+                  text: "—"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
+              - label:
+                  id: day1_icon
+                  x: 0
+                  y: 39
+                  width: 136
+                  text: "\U000F0595"
+                  text_font: mdi_icons_24
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: day1_temp
+                  x: 0
+                  y: 96
+                  width: 136
+                  text: "NO DATA"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
 
         - button:
+            id: lv_button_5
             x: 332
             y: 253
             width: 136
@@ -344,14 +974,43 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 16
+            pad_all: 0
             on_click:
-              - script.execute: {id: forecast, offset: 2, weather: !lambda "return id(forecast_mode_2);"}
+              - script.execute:
+                  id: forecast
+                  offset: 2
+                  weather: !lambda return id(forecast_mode_2);
             widgets:
-              - label: {id: day2_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
-              - label: {id: day2_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
-              - label: {id: day2_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label:
+                  id: day2_label
+                  x: 0
+                  y: 10
+                  width: 136
+                  text: "—"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
+              - label:
+                  id: day2_icon
+                  x: 0
+                  y: 39
+                  width: 136
+                  text: "\U000F0595"
+                  text_font: mdi_icons_24
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: day2_temp
+                  x: 0
+                  y: 96
+                  width: 136
+                  text: "NO DATA"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
 
         - button:
+            id: lv_button_6
             x: 483
             y: 253
             width: 136
@@ -359,14 +1018,43 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 16
+            pad_all: 0
             on_click:
-              - script.execute: {id: forecast, offset: 3, weather: !lambda "return id(forecast_mode_3);"}
+              - script.execute:
+                  id: forecast
+                  offset: 3
+                  weather: !lambda return id(forecast_mode_3);
             widgets:
-              - label: {id: day3_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
-              - label: {id: day3_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
-              - label: {id: day3_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label:
+                  id: day3_label
+                  x: 0
+                  y: 10
+                  width: 136
+                  text: "—"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
+              - label:
+                  id: day3_icon
+                  x: 0
+                  y: 39
+                  width: 136
+                  text: "\U000F0595"
+                  text_font: mdi_icons_24
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: day3_temp
+                  x: 0
+                  y: 96
+                  width: 136
+                  text: "NO DATA"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
 
         - button:
+            id: lv_button_7
             x: 634
             y: 253
             width: 136
@@ -374,60 +1062,118 @@ lvgl:
             bg_color: 0xF4F6F8
             border_width: 0
             radius: 16
+            pad_all: 0
             on_click:
-              - script.execute: {id: forecast, offset: 4, weather: !lambda "return id(forecast_mode_4);"}
+              - script.execute:
+                  id: forecast
+                  offset: 4
+                  weather: !lambda return id(forecast_mode_4);
             widgets:
-              - label: {id: day4_label, y: 10, width: 136, text: "---", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
-              - label: {id: day4_icon, y: 39, width: 136, text: "\U000F0595", text_align: CENTER, text_font: mdi_44, text_color: 0x3D78C5}
-              - label: {id: day4_temp, y: 96, width: 136, text: "--° / --°", text_align: CENTER, text_font: font_16, text_color: 0x171A1F}
+              - label:
+                  id: day4_label
+                  x: 0
+                  y: 10
+                  width: 136
+                  text: "—"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
+              - label:
+                  id: day4_icon
+                  x: 0
+                  y: 39
+                  width: 136
+                  text: "\U000F0595"
+                  text_font: mdi_icons_24
+                  text_align: CENTER
+                  text_color: 0x3D78C5
+              - label:
+                  id: day4_temp
+                  x: 0
+                  y: 96
+                  width: 136
+                  text: "NO DATA"
+                  text_color: 0x171A1F
+                  text_align: CENTER
+                  text_font: font_16
 
         - obj:
+            id: lv_obj_8
             x: 30
             y: 400
             width: 740
             height: 62
             bg_color: 0xFFFFFF
             border_width: 0
+            pad_all: 0
             widgets:
               - button:
+                  id: lv_button_9
                   x: 0
                   y: 5
                   width: 54
                   height: 52
                   border_width: 0
+                  pad_all: 0
                   on_click:
-                    - homeassistant.action:
-                        action: number.decrement
-                        data: {entity_id: number.living_room_weather_jar_brightness}
-                  widgets: [{label: {text: "−", text_font: font_22, align: CENTER}}]
-              - label: {id: brightness_value, x: 59, y: 20, width: 62, text: "--%", text_align: CENTER, text_font: font_16}
+                    - script.execute: brightness_down
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "-"
+                        text_font: font_22
+              - label:
+                  id: brightness_value
+                  x: 59
+                  y: 20
+                  width: 62
+                  text: "--%"
+                  text_align: CENTER
+                  text_font: font_16
               - button:
+                  id: lv_button_11
                   x: 126
                   y: 5
                   width: 54
                   height: 52
                   border_width: 0
+                  pad_all: 0
                   on_click:
-                    - homeassistant.action:
-                        action: number.increment
-                        data: {entity_id: number.living_room_weather_jar_brightness}
-                  widgets: [{label: {text: "+", text_font: font_22, align: CENTER}}]
+                    - script.execute: brightness_up
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "+"
+                        text_font: font_22
               - button:
+                  id: lv_button_13
                   x: 485
                   y: 5
                   width: 110
                   height: 52
                   border_width: 0
-                  on_click: [script.execute: live]
-                  widgets: [{label: {text: "LIVE", text_font: font_16, text_color: 0x25824A, align: CENTER}}]
+                  text_color: 0xFFFFFF
+                  on_click:
+                    - script.execute: live
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "LIVE"
+                        text_color: 0xFFFFFF
               - button:
+                  id: lv_button_15
                   x: 605
                   y: 5
                   width: 135
                   height: 52
+                  bg_color: 0x2196F3
                   border_width: 0
-                  on_click: [lvgl.widget.show: mock_modal]
-                  widgets: [{label: {text: "MOCK", text_font: font_16, align: CENTER}}]
+                  on_click:
+                    - lvgl.widget.show: mock_modal
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "MOCK"
 
         - obj:
             id: mock_modal
@@ -436,366 +1182,442 @@ lvgl:
             y: 55
             width: 610
             height: 370
-            bg_color: 0x20242A
+            bg_color: 0x2196F3
             border_width: 0
-            shadow_width: 0
             radius: 22
+            shadow_width: 0
+            pad_all: 0
             widgets:
-              - label: {x: 16, y: 12, text: "WEATHER JAR MOCK", text_font: font_22, text_color: 0xFFFFFF}
+              - label:
+                  id: lv_label_17
+                  x: 16
+                  y: 12
+                  text: "WEATHER JAR MOCK"
+                  text_color: 0xFFFFFF
+                  text_font: font_22
               - button:
+                  id: lv_button_18
                   x: 544
                   y: 6
                   width: 42
                   height: 42
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  on_click: [lvgl.widget.hide: mock_modal]
-                  widgets: [{label: {text: "\U000F0156", text_font: mdi_28, text_color: 0xFFFFFF, align: CENTER}}]
-
+                  text_color: 0x3D78C5
+                  on_click:
+                    - lvgl.widget.hide: mock_modal
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\U000F0156"
+                        text_font: mdi_icons_24
+                        text_color: 0x3D78C5
               - button:
+                  id: lv_button_20
                   x: 16
                   y: 65
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: clear
                   widgets:
                     - label:
+                        id: lv_icon_21
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖙"
+                        text: "\U000F0599"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_22
+                        x: 0
                         y: 47
                         width: 132
                         text: "CLEAR"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_23
                   x: 159
                   y: 65
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: mainly_clear
                   widgets:
                     - label:
+                        id: lv_icon_24
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖕"
+                        text: "\U000F0595"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_25
+                        x: 0
                         y: 47
                         width: 132
                         text: "MAINLY CLEAR"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_26
                   x: 302
                   y: 65
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: partly_cloudy
                   widgets:
                     - label:
+                        id: lv_icon_27
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖕"
+                        text: "\U000F0595"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_28
+                        x: 0
                         y: 47
                         width: 132
                         text: "PARTLY CLOUDY"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_29
                   x: 445
                   y: 65
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: overcast
                   widgets:
                     - label:
+                        id: lv_icon_30
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖐"
+                        text: "\U000F0590"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_31
+                        x: 0
                         y: 47
                         width: 132
                         text: "OVERCAST"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_32
                   x: 16
                   y: 158
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: fog
                   widgets:
                     - label:
+                        id: lv_icon_33
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖑"
+                        text: "\U000F0591"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_34
+                        x: 0
                         y: 47
                         width: 132
                         text: "FOG"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_35
                   x: 159
                   y: 158
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: drizzle
                   widgets:
                     - label:
+                        id: lv_icon_36
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖗"
+                        text: "\U000F0597"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_37
+                        x: 0
                         y: 47
                         width: 132
                         text: "DRIZZLE"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_38
                   x: 302
                   y: 158
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: rain
                   widgets:
                     - label:
+                        id: lv_icon_39
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖗"
+                        text: "\U000F0597"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_40
+                        x: 0
                         y: 47
                         width: 132
                         text: "RAIN"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_41
                   x: 445
                   y: 158
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: snow
                   widgets:
                     - label:
+                        id: lv_icon_42
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖘"
+                        text: "\U000F0598"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_43
+                        x: 0
                         y: 47
                         width: 132
                         text: "SNOW"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_44
                   x: 16
                   y: 251
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: storm
                   widgets:
                     - label:
+                        id: lv_icon_45
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖓"
+                        text: "\U000F0593"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_46
+                        x: 0
                         y: 47
                         width: 132
                         text: "STORM"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_47
                   x: 159
                   y: 251
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: sunrise
                   widgets:
                     - label:
+                        id: lv_icon_48
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖙"
+                        text: "\U000F0599"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_49
+                        x: 0
                         y: 47
                         width: 132
                         text: "SUNRISE"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_50
                   x: 302
                   y: 251
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: sunset
                   widgets:
                     - label:
+                        id: lv_icon_51
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖙"
+                        text: "\U000F0599"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_52
+                        x: 0
                         y: 47
                         width: 132
                         text: "SUNSET"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
-
               - button:
+                  id: lv_button_53
                   x: 445
                   y: 251
                   width: 132
                   height: 82
-                  bg_color: 0x353A40
+                  bg_color: 0xFFFFFF
                   border_width: 0
-                  shadow_width: 0
                   radius: 14
+                  pad_all: 0
+                  shadow_width: 0
                   on_click:
                     - script.execute:
                         id: mock
                         mode: loop
                   widgets:
                     - label:
+                        id: lv_icon_54
+                        x: 0
                         y: 5
                         width: 132
-                        text: "󰖕"
+                        text: "\U000F0595"
+                        text_font: mdi_icons_24
                         text_align: CENTER
-                        text_font: mdi_28
-                        text_color: 0xFFFFFF
+                        text_color: 0x2196F3
                     - label:
+                        id: lv_label_55
+                        x: 0
                         y: 47
                         width: 132
                         text: "LOOP"
+                        text_color: 0x2196F3
                         text_align: CENTER
                         text_font: font_14
-                        text_color: 0xFFFFFF
+

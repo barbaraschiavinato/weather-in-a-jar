@@ -1246,6 +1246,13 @@ void updateLightning() {
 // WEATHER UPDATE
 // ============================================================
 
+// Timezone information returned by Open-Meteo for LATITUDE/LONGITUDE.
+// NTP remains UTC; these values convert UTC to the local time of the
+// configured coordinates.
+long locationUtcOffsetSeconds = 0;
+String locationTimezone = "GMT";
+String locationTimezoneAbbreviation = "GMT";
+
 bool updateWeather() {
   if (
     WiFi.status() !=
@@ -1359,6 +1366,26 @@ bool updateWeather() {
     }
   }
 
+  locationUtcOffsetSeconds =
+    doc["utc_offset_seconds"]
+      | 0;
+
+  locationTimezone =
+    String(
+      (const char*)(
+        doc["timezone"]
+          | "GMT"
+      )
+    );
+
+  locationTimezoneAbbreviation =
+    String(
+      (const char*)(
+        doc["timezone_abbreviation"]
+          | "GMT"
+      )
+    );
+
   String sunriseString =
     doc["daily"]["sunrise"][0]
       | "";
@@ -1377,12 +1404,14 @@ bool updateWeather() {
       &sunriseTm
     )
   ) {
-    sunriseTm.tm_isdst = -1;
-
+    // Convert the Open-Meteo local wall-clock value as if it were UTC,
+    // then subtract the coordinate-derived offset to obtain the true epoch.
+    // The ESP32 system clock itself remains UTC.
     weatherState.sunrise =
       mktime(
         &sunriseTm
-      );
+      ) -
+      locationUtcOffsetSeconds;
   }
 
   if (
@@ -1392,12 +1421,11 @@ bool updateWeather() {
       &sunsetTm
     )
   ) {
-    sunsetTm.tm_isdst = -1;
-
     weatherState.sunset =
       mktime(
         &sunsetTm
-      );
+      ) -
+      locationUtcOffsetSeconds;
   }
 
   weatherState.valid =
@@ -1792,6 +1820,67 @@ void handleStatus() {
   // the instantaneous brightness calculated by the current effect.
   doc["brightnessPercent"] =
     userBrightnessPercent;
+
+  // Time diagnostics: show exactly what the ESP32 believes the current
+  // local time, sunrise and sunset are.
+  auto formatLocalTime =
+    [](time_t value) -> String {
+      if (value <= 0) {
+        return "";
+      }
+
+      struct tm localTm = {};
+
+      time_t localValue =
+        value +
+        locationUtcOffsetSeconds;
+
+      if (!gmtime_r(&localValue, &localTm)) {
+        return "";
+      }
+
+      char buffer[24];
+
+      strftime(
+        buffer,
+        sizeof(buffer),
+        "%Y-%m-%d %H:%M:%S",
+        &localTm
+      );
+
+      return String(buffer);
+    };
+
+  time_t statusNow =
+    time(nullptr);
+
+  doc["currentTime"] =
+    formatLocalTime(statusNow);
+
+  doc["sunriseTime"] =
+    formatLocalTime(weatherState.sunrise);
+
+  doc["sunsetTime"] =
+    formatLocalTime(weatherState.sunset);
+
+  doc["timezone"] =
+    locationTimezone;
+
+  doc["timezoneAbbreviation"] =
+    locationTimezoneAbbreviation;
+
+  doc["utcOffsetSeconds"] =
+    locationUtcOffsetSeconds;
+
+  // Epoch values make timezone/DST problems easy to diagnose as well.
+  doc["currentEpoch"] =
+    (long long)statusNow;
+
+  doc["sunriseEpoch"] =
+    (long long)weatherState.sunrise;
+
+  doc["sunsetEpoch"] =
+    (long long)weatherState.sunset;
 
   doc["source"] =
     mockLoopState.enabled
@@ -3717,13 +3806,17 @@ void maintainMqtt() {
 // ============================================================
 
 bool setupTime() {
-  setenv(
-    "TZ",
-    "GMT0BST,M3.5.0/1,M10.5.0/2",
-    1
-  );
+  // Force a fresh NTP synchronisation at every boot instead of accepting
+  // a possibly stale RTC/system timestamp left over from a previous run.
+  struct timeval resetTime = {
+    0,
+    0
+  };
 
-  tzset();
+  settimeofday(
+    &resetTime,
+    nullptr
+  );
 
   configTime(
     0,
@@ -3734,17 +3827,22 @@ bool setupTime() {
   );
 
   Serial.print(
-    "Synchronising time"
+    "Synchronising time from NTP"
   );
 
   constexpr unsigned long TIME_SYNC_TIMEOUT_MS =
-    10000;
+    20000;
+
+  // 2024-01-01 00:00:00 UTC. After resetting the clock to epoch 0,
+  // reaching this value proves that a fresh network time was received.
+  constexpr time_t MIN_VALID_EPOCH =
+    1704067200;
 
   unsigned long syncStartedAt =
     millis();
 
   while (
-    time(nullptr) < 100000 &&
+    time(nullptr) < MIN_VALID_EPOCH &&
     millis() - syncStartedAt < TIME_SYNC_TIMEOUT_MS
   ) {
     delay(250);
@@ -3756,19 +3854,19 @@ bool setupTime() {
   time_t now =
     time(nullptr);
 
-  if (now < 100000) {
+  if (now < MIN_VALID_EPOCH) {
     Serial.println(
-      "WARNING: Time synchronisation failed. Continuing startup."
+      "WARNING: NTP time synchronisation failed."
     );
 
     return false;
   }
 
   Serial.println(
-    "Time synchronised."
+    "Time synchronised from NTP."
   );
 
-  struct tm timeInfo;
+  struct tm timeInfo = {};
 
   if (
     localtime_r(
@@ -3777,7 +3875,10 @@ bool setupTime() {
     )
   ) {
     Serial.printf(
-      "Local time: %02d:%02d:%02d\n",
+      "Local time: %04d-%02d-%02d %02d:%02d:%02d\n",
+      timeInfo.tm_year + 1900,
+      timeInfo.tm_mon + 1,
+      timeInfo.tm_mday,
       timeInfo.tm_hour,
       timeInfo.tm_min,
       timeInfo.tm_sec

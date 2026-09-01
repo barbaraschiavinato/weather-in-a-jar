@@ -42,6 +42,37 @@ local HTTP API.
 
 ------------------------------------------------------------------------
 
+# Shopping List
+
+The following parts are used for the current build. The touchscreen and its
+battery are optional.
+
+| Component | Version / Notes | Link |
+|---|---|---|
+| 4 Way MOS Switch Module On-Board ESP32-32E | **4 ways version** | https://www.aliexpress.com/item/1005009534991345.html |
+| DC5V WS2812B Round Pixel Ring RGB Full Color | **White, 35 LEDs version** | https://www.aliexpress.com/item/1005007342218529.html |
+| Guition ESP32-S3-N16R8 JC8048W550 | **Optional touchscreen** | https://www.aliexpress.com/item/1005006715794302.html |
+| JST 1.25 mm Plug Battery 3.7V 3000mAh | **Optional, for touchscreen** | https://www.aliexpress.com/item/1005005626755539.html |
+
+------------------------------------------------------------------------
+
+# 3D-Printed Parts
+
+The 3D-printable parts for the main Weather in a Box enclosure are available
+on MakerWorld:
+
+**Weather in a Box – ESP32 Real-Time Weather Display**
+
+https://makerworld.com/en/models/3246919-weather-in-a-box-esp32-real-time-weather-display
+
+The optional 5-inch Guition touchscreen uses the following enclosure/base:
+
+**XTouch Pro Official Base for Guition 5-inch LCD**
+
+https://makerworld.com/en/models/1016156-xtouch-pro-official-base-for-guition-5inch-lcd
+
+------------------------------------------------------------------------
+
 # Hardware
 
 ## Weather Jar --- Dry Version
@@ -163,6 +194,21 @@ The following four cards display forecast days 1--4.
 ------------------------------------------------------------------------
 
 # ESPHome Configuration
+
+The complete ESPHome configuration for the optional touchscreen is included
+in this repository as:
+
+``` text
+weather-panel.yaml
+```
+
+This file contains the configuration for the **Guition / Sunton JC8048W550
+5-inch 800×480 ESP32-S3 touchscreen**, including the display, GT911 touch
+controller, Weather Jar HTTP API integration, live weather view, five-day
+forecast, brightness controls and weather/mock controls.
+
+To use it, copy `weather-panel.yaml` into your ESPHome configuration directory
+and provide the required values in `secrets.yaml` as described below.
 
 The panel YAML uses secrets instead of embedding local network
 information directly in the configuration.
@@ -690,11 +736,13 @@ Do not commit real MQTT credentials to a public repository.
 Typical structure:
 
 ``` text
-mini_weather_central/
+weather-in-a-jar/
 ├── mini_weather_central.ino
 ├── config.h
-├── secrets.h
-└── types.h
+├── secrets.example.h
+├── types.h
+├── weather_colors.h
+└── weather-panel.yaml
 ```
 
 ## `mini_weather_central.ino`
